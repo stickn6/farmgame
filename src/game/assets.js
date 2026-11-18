@@ -10,8 +10,11 @@ export const MATS = {
   glow: new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.5, emissive: new THREE.Color('#ffc864'), emissiveIntensity: 0.0, flatShading: true }),
   water: new THREE.MeshStandardMaterial({ color: '#4fa6d8', roughness: 0.15, metalness: 0.1, transparent: true, opacity: 0.85 }),
   smoke: new THREE.MeshStandardMaterial({ color: '#eeeeee', roughness: 1, transparent: true, opacity: 0.7, flatShading: true }),
+  // greenhouse panes etc.: pass 'glass' as the bucket argument of box()
+  glass: new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.1, metalness: 0.1, transparent: true, opacity: 0.45, depthWrite: false, flatShading: true }),
 };
 MATS.glow.userData.bucket = 'glow';
+MATS.glass.userData.bucket = 'glass';
 
 const colorMats = new Map();
 // Lightweight "material" used only during model construction to carry a color.
@@ -161,11 +164,22 @@ export function getModel(key) {
   if (!m) {
     const [name, ...args] = key.split(':');
     const builder = BUILDERS[name];
-    if (!builder) throw new Error('No builder for ' + key);
-    m = bake(builder(...args));
+    if (!builder) {
+      console.warn('No builder for ' + key + ' — using placeholder');
+      m = bake(placeholder());
+    } else m = bake(builder(...args));
     modelCache.set(key, m);
   }
   return m;
+}
+
+// Other modules add builders here (see src/game/models/*.js)
+export function registerBuilders(obj) { Object.assign(BUILDERS, obj); }
+export function registerCrops(obj) { Object.assign(CROP_BUILDERS, obj); }
+const CROP_BUILDERS = {};
+
+function placeholder() {
+  return group(box(0.8, 0.8, 0.8, '#ff66cc', 0, 0, 0), box(0.4, 0.4, 0.4, '#ffffff', 0, 0.8, 0));
 }
 
 export const makeObject = (key, opts) => instantiate(getModel(key), opts);
@@ -714,6 +728,11 @@ function crop(type, stageStr, v = '0') {
   const base = 0.08; // soil top
   if (stage === 0) return group(sprouts(r));
   const parts = [];
+  if (CROP_BUILDERS[type]) {
+    const gr = group(CROP_BUILDERS[type](stage, r, { base, parts: [] }));
+    gr.rotation.y = r() * 0.4 - 0.2;
+    return group(gr);
+  }
   switch (type) {
     case 'wheat': {
       const h = [0, 0.25, 0.45, 0.55][stage];
@@ -848,3 +867,7 @@ export const BUILDERS = {
 };
 
 export { C as PALETTE };
+
+// Building blocks for model modules. All sizes in tiles (1 unit = 1 tile); y=0 is the ground;
+// a model's footprint is centered on the origin and its front faces +z.
+export const H = { box, cyl, cone, ball, sph, roof, group, rot, scl, fenceRect, fencePost, fenceRail, groundPatch, smallHouse, sprouts, grid, hashRand, cm, mesh, g, C };

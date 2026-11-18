@@ -249,6 +249,8 @@ export class World {
       if (Math.abs(x) < HALF + 1 && Math.abs(z) < HALF + 1) continue;
       if (Math.hypot(x - pond.x, z - pond.z) < pond.r + 1.5) continue;
       if (Math.abs(z - road.z) < 2.2) continue;
+      // keep clearings for the village project sites (see PROJECT_SITES in views.js)
+      if (Math.hypot(x - 10, z - (HALF + 7.5)) < 3.5 || Math.hypot(x - 4, z - (-HALF - 4.5)) < 4) continue;
       const v = r();
       const key = v < 0.45 ? 'pine:' + Math.floor(r() * 5) : v < 0.85 ? 'oak:' + Math.floor(r() * 5) : 'rock:' + Math.floor(r() * 4);
       const o = makeObject(key);
@@ -313,7 +315,7 @@ export class World {
     this.clouds = [];
     for (let i = 0; i < 9; i++) {
       const c = makeObject('cloud:' + i, { shadow: false, receive: false });
-      c.position.set((r() - 0.5) * 120, 16 + r() * 6, (r() - 0.5) * 90 - 10);
+      c.position.set((r() - 0.5) * 140, 36 + r() * 6, (r() - 0.5) * 110 - 10); // above the highest camera position (~33), so it never flies through them
       c.scale.setScalar(1 + r());
       c.userData.speed = 0.6 + r() * 0.8;
       this.scene.add(c);
