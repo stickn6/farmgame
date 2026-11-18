@@ -1,27 +1,20 @@
 import * as THREE from 'three';
 import './style.css';
-import { ITEMS, CROPS, ANIMALS, OBJECTS } from './game/config.js';
+import { ITEMS, CROPS, ANIMALS, OBJECTS, STORAGE, PROJECTS } from './game/config.js';
 import { Game } from './game/state.js';
 import { World, tileToWorld, worldToTile } from './game/world.js';
-import { FarmView, ObjectView, AnimalView, DogView, Ghost, TileCursor, objectCenter } from './game/views.js';
+import { FarmView, ObjectView, AnimalView, DogView, VisitorView, WagonView, ProjectView, PROJECT_SITES, Ghost, TileCursor, objectCenter } from './game/views.js';
 import { Effects } from './game/effects.js';
 import { Audio } from './game/audio.js';
 import { Input } from './game/input.js';
 import { HUD, fmtTime } from './ui/hud.js';
 import { Bubbles } from './ui/bubbles.js';
+import './game/models/index.js';
 
 const DAY_MS = 10 * 60 * 1000; // one in-game day = 10 real minutes
 
-const CROP_COLORS = {
-  wheat: ['#f2cf5b', '#e6bf4a', '#fff1a8'],
-  carrot: ['#f08a24', '#5fae3e'],
-  corn: ['#f7cf3b', '#5fae3e'],
-  sunflower: ['#f7cf3b', '#6b3d1c'],
-  tomato: ['#e8402f', '#5fae3e'],
-  strawberry: ['#e8304a', '#5fae3e', '#ffffff'],
-  pumpkin: ['#f08a24', '#e57a1c'],
-};
-const ANIMAL_SOUND = { chicken: 'cluck', cow: 'moo', sheep: 'baa' };
+const burstColors = (item) => ITEMS[item]?.colors || ['#ffffff', '#ffe08a'];
+const animalSound = (type) => ANIMALS[type]?.sound || 'collect';
 
 class Controller {
   constructor() {
@@ -37,6 +30,10 @@ class Controller {
     this.objects = new ObjectView(this.world.scene, this.game);
     this.animals = new AnimalView(this.world.scene, this.game);
     this.dog = new DogView(this.world.scene, this.game);
+    this.visitors = new VisitorView(this.world.scene, this.game, this.world.roadZ);
+    this.visitors.faceYaw = () => this.world.rig.yaw;
+    this.wagon = new WagonView(this.world.scene, this.game, this.world.roadZ);
+    this.projects = new ProjectView(this.world.scene, this.game);
     this.ghost = new Ghost(this.world.scene, this.game);
     this.cursor = new TileCursor(this.world.scene);
 
@@ -63,6 +60,20 @@ class Controller {
       this.world.drawGround(this.game.landLo(), this.game.landHi());
     });
     this.game.on('orderDone', () => { this.world.sendTruck(); this.audio.play('truck'); });
+    this.game.on('drop', ({ item }) => {
+      this.hud.toast(`Found ${ITEMS[item].icon} ${ITEMS[item].name}!`, 'good');
+      this.audio.play('quest');
+      this.effects.flyFrom(window.innerWidth / 2, window.innerHeight / 2, ITEMS[item].icon, this.hud.barnBtn, { delay: 250 });
+    });
+    this.game.on('storageFull', (id) => this.hud.barnBtn.classList.add('bump'));
+    this.game.on('levelup', () => { if (!this.placing) this.hud.setTool(this.tool); });
+    this.game.on('projectStage', ({ id, stage, xp, gems, finished }) => {
+      this.audio.play('levelup');
+      this.hud.confetti();
+      const def = PROJECTS[id];
+      this.hud.toast(finished ? `${def.icon} ${def.name} is finished! ${def.perk} 🎉` : `${def.icon} ${def.name}: stage ${stage} complete! +⭐${xp} +💎${gems}`, 'good');
+    });
+    this.game.on('mastery', () => { if (this.tool === 'seed') this.hud.renderSeedBar(); });
 
     // frame the farmhouse & fields at start
     const house = this.game.s.objects.find((o) => o.type === 'farmhouse');
@@ -73,6 +84,8 @@ class Controller {
 
     this.bubbleTimer = 0;
     this.lastT = performance.now();
+    // daily gift greets returning players
+    setTimeout(() => this.hud.showDaily(true), 1200);
     document.getElementById('loading').classList.add('gone');
     document.addEventListener('visibilitychange', () => { if (document.hidden) this.game.save(); });
     window.addEventListener('pagehide', () => this.game.save());
@@ -96,10 +109,7 @@ class Controller {
     if (this.placing) return 'paint';
     if (this.tool !== 'hand') return 'paint';
     const t = this.tileAt(e);
-    if (t) {
-      const soil = this.game.soilAt(t.x, t.z);
-      if (soil && soil.crop && this.game.cropStage(soil.crop) === 3) return 'paint';
-    }
+    if (t && this.harvestableAt(t.x, t.z)) return 'paint';
     return 'pan';
   }
 
@@ -149,9 +159,12 @@ class Controller {
           if (!this.paint.warned) { this.paint.warned = true; this.hud.toast('Expand your land to farm here 🗺️', 'info'); }
           return;
         }
+        const cost = g.plowCost();
         if (g.plow(x, z)) {
           this.audio.play('plow');
           this.effects.burst(pos, ['#8a5a33', '#6d4325', '#a87447'], 8, 0.7);
+          if (cost) this.effects.floatText(pos, `-🪙${cost}`, 'cost');
+          this.hud.refreshToolHint();
         } else if (isTap) {
           const soil = g.soilAt(x, z);
           if (soil) this.hud.toast('Already plowed — pick 🌱 Seeds to plant', 'info');
@@ -182,7 +195,12 @@ class Controller {
         }
         const o = g.objectAt(x, z);
         if (o && isTap) {
-          if (OBJECTS[o.type].kind === 'decor') this.removeObject(o);
+          const kind = OBJECTS[o.type].kind;
+          if (kind === 'decor') this.removeObject(o);
+          else if (kind === 'tree') {
+            if (g.treeState(o) === 'dead') this.removeObject(o);
+            else { this.paint = null; this.hud.openTree(o); } // ask in-game, never with a blocking dialog mid-gesture
+          }
           else this.hud.toast('Buildings can be moved but not removed', 'info');
         }
         break;
@@ -191,16 +209,38 @@ class Controller {
     }
   }
 
+  harvestableAt(x, z) {
+    const g = this.game;
+    const soil = g.soilAt(x, z);
+    if (soil && soil.crop && g.cropStage(soil.crop) === 3) return true;
+    const o = g.objectAt(x, z);
+    return !!(o && OBJECTS[o.type].kind === 'tree' && g.treeState(o) === 'ready');
+  }
+
   harvestAt(x, z) {
+    const o = this.game.objectAt(x, z);
+    if (o && OBJECTS[o.type].kind === 'tree') { this.harvestTree(o); return; }
     const r = this.game.harvest(x, z);
     if (!r) return;
     const pos = tileToWorld(x, z);
     this.audio.play('harvest');
-    this.effects.burst(pos, CROP_COLORS[r.item] || ['#ffffff'], 10);
+    this.effects.burst(pos, burstColors(r.item), 10);
     this.effects.floatText(pos.clone().setY(0.6), `+${r.qty} ${ITEMS[r.item].icon}`);
     this.effects.fly(pos, ITEMS[r.item].icon, this.hud.barnBtn);
     this.effects.fly(pos, '⭐', this.hud.levelBox, { delay: 120 });
     if (Math.random() < 0.15) this.dog.goTo(pos);
+  }
+
+  harvestTree(o) {
+    const r = this.game.harvestTree(o);
+    if (!r) return;
+    const pos = objectCenter(this.game, o).setY(1.2);
+    this.audio.play('harvest');
+    this.effects.burst(pos, burstColors(r.item), 12);
+    this.effects.floatText(pos.clone().setY(1.6), `+${r.qty} ${ITEMS[r.item].icon}`);
+    for (let i = 0; i < Math.min(3, r.qty); i++) this.effects.fly(pos, ITEMS[r.item].icon, this.hud.barnBtn, { delay: i * 90 });
+    this.effects.fly(pos, '⭐', this.hud.levelBox, { delay: 200 });
+    if (r.dead) this.hud.toast('That tree is all fruited out — clear it to plant a new one 🪓', 'info');
   }
 
   onHover(e) {
@@ -213,6 +253,8 @@ class Controller {
 
   onKey(e) {
     const k = e.key.toLowerCase();
+    const modal = this.hud.topModal();
+    if (modal) { if (k === 'escape' || k === 'enter') this.hud.closeTopModal(); return; }
     if (k === 'escape') { if (this.hud.panel) this.hud.closePanel(); else if (this.placing) this.cancelPlacement(); else this.setTool('hand'); }
     if (k === 'q') this.world.rig.rotateBy(Math.PI / 2);
     if (k === 'e') this.world.rig.rotateBy(-Math.PI / 2);
@@ -230,9 +272,21 @@ class Controller {
   onTap(e) {
     if (this.tool !== 'hand') return;
     const g = this.game;
-    // animals first (they move around, so pick by mesh)
-    const hit = this.world.pick(e.clientX, e.clientY, this.animals.meshes())[0];
-    if (hit) {
+    // one raycast against visitors, animals and buildings: the nearest thing wins
+    const hit = this.world.pick(e.clientX, e.clientY, [...this.visitors.meshes(), ...this.animals.meshes(), ...this.objects.allMeshes().filter((m) => m.visible), ...this.projects.meshes(), ...this.wagon.meshes()])[0];
+    let vo = hit && hit.object;
+    while (vo && vo.userData.visitorId == null && vo.userData.animalId == null && vo.userData.objectId == null && vo.userData.projectId == null && vo !== this.wagon.group) vo = vo.parent;
+    if (vo && vo === this.wagon.group) { this.audio.play('click'); this.hud.openOrders('wagon'); return; }
+    if (vo && vo.userData.projectId != null) { this.tapProject(vo.userData.projectId); return; }
+    if (vo && vo.userData.objectId != null) {
+      const ob = g.objById.get(vo.userData.objectId);
+      if (ob) { this.tapObject(ob); return; }
+    }
+    if (vo && vo.userData.visitorId != null) {
+      const v = g.s.visitors.find((x) => x.id === vo.userData.visitorId);
+      if (v) { this.audio.play('click'); this.hud.openVisitor(v); return; }
+    }
+    if (vo && vo.userData.animalId != null) {
       let o = hit.object;
       while (o && o.userData.animalId == null) o = o.parent;
       const a = o && g.s.animals.find((x) => x.id === o.userData.animalId);
@@ -246,9 +300,9 @@ class Controller {
     const pos = tileToWorld(t.x, t.z);
     if (soil) {
       if (soil.crop) {
-        const c = CROPS[soil.crop.type];
-        const left = (c.growTime * 1000 - (Date.now() - soil.crop.plantedAt)) / 1000;
+        const left = (g.cropReadyAt(soil.crop) - g.now()) / 1000;
         this.effects.floatText(pos.clone().setY(0.5), `${ITEMS[soil.crop.type].icon} ${fmtTime(left)}`, 'info');
+        this.hud.openCropInfo(t.x, t.z);
       } else {
         this.setTool('seed');
         this.hud.toast('Pick a seed and tap soil to plant 🌱', 'info');
@@ -259,16 +313,32 @@ class Controller {
     if (Math.random() < 0.3) this.audio.play('woof');
   }
 
+  tapProject(id) {
+    const def = PROJECTS[id];
+    this.audio.play('click');
+    if (this.game.s.level < def.level) { this.hud.toast(`${def.icon} ${def.name} — ${def.desc} Help restore it from level ${def.level}.`, 'info'); return; }
+    this.hud.openProject(id);
+  }
+
   tapObject(o) {
     const def = OBJECTS[o.type];
     this.bounce(o);
-    if (o.type === 'farmhouse') { this.hud.openFarmhouse(); return; }
+    if (o.type === 'farmhouse') {
+      if (this.game.s.level >= PROJECTS.master.level && (this.game.s.projects?.master?.stage || 0) < PROJECTS.master.stages.length) { this.hud.openProject('master'); return; }
+      this.hud.openFarmhouse(); return;
+    }
     if (o.type === 'orderboard') { this.hud.openOrders(); return; }
     if (def.kind === 'pen') { this.tendPen(o); return; }
     if (def.kind === 'factory') {
       if (!this.collectFactory(o)) this.hud.openFactory(o);
       return;
     }
+    if (def.kind === 'tree') {
+      if (this.game.treeState(o) === 'ready') this.harvestTree(o);
+      else this.hud.openTree(o);
+      return;
+    }
+    if (def.kind === 'storage') { this.hud.openBarn(def.storage); return; }
     if (def.kind === 'decor') this.hud.openDecor(o);
   }
 
@@ -295,23 +365,25 @@ class Controller {
     }
     for (const a of list) {
       if (g.animalState(a) !== 'hungry') continue;
+      if (!ANIMALS[a.type].food) { g.feedAnimal(a); continue; }
       if (g.feedAnimal(a)) {
         fed++;
         const p = this.animals.map.get(a.id)?.obj.position || objectCenter(g, o);
-        this.effects.floatText(p.clone().setY(0.8), `${ITEMS[ANIMALS[a.type].food].icon} yum!`, 'info');
+        this.effects.floatText(p.clone().setY(0.8), `${ITEMS[g.animalFood(a.type).item].icon} yum!`, 'info');
         this.effects.burst(p, ['#f2cf5b', '#e6bf4a'], 5, 0.4);
       } else starving++;
     }
     const def = ANIMALS[list[0].type];
-    if (collected) { this.audio.play('collect'); setTimeout(() => this.audio.play(ANIMAL_SOUND[list[0].type]), 150); }
+    if (collected) { this.audio.play('collect'); setTimeout(() => this.audio.play(animalSound(list[0].type)), 150); }
     if (fed) this.audio.play('feed');
-    if (starving) this.hud.toast(`Need ${def.foodQty} ${ITEMS[def.food].icon} ${ITEMS[def.food].name} per ${def.name.toLowerCase()} — grow some!`, 'bad');
+    const food = g.animalFood(list[0].type);
+    if (starving && food) this.hud.toast(`Need ${food.qty} ${ITEMS[food.item].icon} ${ITEMS[food.item].name} per ${def.name.toLowerCase()} — grow some!`, 'bad');
     if (!collected && !fed && !starving && !fromPanel) this.hud.openPen(o);
   }
 
   collectFactory(o) {
     const r = this.game.collectFactory(o);
-    if (!r) return false;
+    if (!r) return false; // nothing collected (none ready, or storage full) → caller opens the panel
     const p = objectCenter(this.game, o).setY(1.5);
     let i = 0;
     for (const [item, n] of Object.entries(r.got)) {
@@ -355,10 +427,88 @@ class Controller {
     const a = this.game.buyAnimal(type);
     if (!a) return;
     this.audio.play('build');
-    setTimeout(() => this.audio.play(ANIMAL_SOUND[type]), 400);
+    setTimeout(() => this.audio.play(animalSound(type)), 400);
     this.hud.toast(`${ANIMALS[type].icon} A new ${ANIMALS[type].name.toLowerCase()} joined your farm!`, 'good');
     const home = this.game.objById.get(a.home);
     this.world.rig.focus(objectCenter(this.game, home));
+    this.hud.refreshPanel();
+  }
+
+  upgradeStorage(id) {
+    if (this.game.upgradeStorage(id)) {
+      this.audio.play('build');
+      this.hud.confetti();
+      const b = this.game.s.objects.find((o) => o.type === STORAGE[id].building);
+      if (b) { this.bounce(b); this.effects.burst(objectCenter(this.game, b).setY(1), ['#ffe08a', '#ffffff', '#b07a45'], 20, 1.2); }
+    }
+  }
+
+  serveVisitor(id) {
+    const v = this.game.serveVisitor(id);
+    if (!v) return false;
+    this.audio.play('coin');
+    const e = [...this.visitors.leaving].find((x) => x.v.id === id);
+    const p = e ? e.obj.position.clone().setY(1.2) : null;
+    const sp = p ? this.world.project(p) : { x: window.innerWidth / 2, y: window.innerHeight / 2 };
+    for (let i = 0; i < 4; i++) this.effects.flyFrom(sp.x, sp.y, '🪙', this.hud.coinsPill, { delay: i * 80 });
+    this.effects.flyFrom(sp.x, sp.y, '⭐', this.hud.levelBox, { delay: 200 });
+    this.effects.floatTextAt(sp.x, sp.y - 30, `+🪙${v.coins}  +⭐${v.xp}`, 'big');
+    return true;
+  }
+
+  dismissVisitor(id) { this.game.dismissVisitor(id); this.audio.play('click'); }
+
+  claimChore(i) {
+    const r = this.game.claimChore(i);
+    if (!r) return;
+    this.audio.play('coin');
+    const cx = window.innerWidth / 2, cy = window.innerHeight / 2;
+    for (let k = 0; k < 3; k++) this.effects.flyFrom(cx, cy, '🪙', this.hud.coinsPill, { delay: k * 80 });
+    this.effects.flyFrom(cx, cy, '⭐', this.hud.levelBox, { delay: 150 });
+    if (r.bonus) { this.hud.toast(`All chores done! +💎${r.bonus.gems} +${ITEMS[r.bonus.item].icon}`, 'good'); this.hud.confetti(); }
+  }
+
+  fillCrate(i) {
+    const r = this.game.fillCrate(i);
+    if (!r) return;
+    this.audio.play('coin');
+    const p = this.world.project(this.wagon.group.position.clone().setY(1.2));
+    for (let k = 0; k < 4; k++) this.effects.flyFrom(p.x, p.y, '🪙', this.hud.coinsPill, { delay: k * 80 });
+    this.effects.flyFrom(p.x, p.y, '⭐', this.hud.levelBox, { delay: 200 });
+    if (r.bonus) {
+      this.audio.play('truck');
+      this.hud.confetti();
+      this.hud.toast(`🛒 Wagon full! +🪙${r.bonus.coins} +💎${r.bonus.gems} ${Object.keys(r.bonus.items).map((i) => ITEMS[i].icon).join('')}`, 'good');
+    }
+  }
+
+  contribute(id, what, amount) {
+    const r = this.game.contribute(id, what, amount);
+    if (!r) return;
+    this.audio.play(what === 'coins' ? 'coin' : 'collect');
+    const site = PROJECT_SITES[id];
+    if (site) this.effects.burst(new THREE.Vector3(site.x, 1, site.z), ['#d9c27a', '#ffffff', '#a87447'], 12);
+  }
+
+  claimDaily() {
+    const r = this.game.claimDaily();
+    if (!r) return;
+    this.audio.play('levelup');
+    this.hud.confetti();
+    const cx = window.innerWidth / 2, cy = window.innerHeight / 2;
+    if (r.reward.coins) for (let i = 0; i < 5; i++) this.effects.flyFrom(cx, cy, '🪙', this.hud.coinsPill, { delay: i * 70 });
+    if (r.reward.gems) for (let i = 0; i < 3; i++) this.effects.flyFrom(cx, cy, '💎', this.hud.gemsPill, { delay: i * 90 });
+    for (const i of Object.keys(r.reward.items || {})) this.effects.flyFrom(cx, cy, ITEMS[i].icon, this.hud.barnBtn, { delay: 150 });
+  }
+
+  claimAchievement(id) {
+    const tier = this.game.claimAchievement(id);
+    if (!tier) return;
+    this.audio.play('quest');
+    const cx = window.innerWidth / 2, cy = window.innerHeight / 2;
+    if (tier.gems) for (let i = 0; i < 3; i++) this.effects.flyFrom(cx, cy, '💎', this.hud.gemsPill, { delay: i * 90 });
+    if (tier.coins) for (let i = 0; i < 3; i++) this.effects.flyFrom(cx, cy, '🪙', this.hud.coinsPill, { delay: i * 90 });
+    this.hud.refreshBadges();
     this.hud.refreshPanel();
   }
 
@@ -400,11 +550,11 @@ class Controller {
     const t = worldToTile(c);
     const [w, d] = g.objSize(type, existing ? existing.rot : 0);
     this.placing = { type, rot: existing ? existing.rot : 0, x: existing ? existing.x : t.x - Math.floor(w / 2), z: existing ? existing.z : t.z - Math.floor(d / 2), moveId };
-    if (existing) this.objects.setHidden(moveId, true);
+    if (existing) { this.objects.setHidden(moveId, true); this.animals.setHomeHidden(moveId, true); }
     this.tool = 'hand';
-    this.ghost.show(type);
+    this.ghost.show(OBJECTS[type].kind === 'tree' ? `tree:${OBJECTS[type].model}:${existing ? this.objects.treeVisual(existing) : 'sapling'}` : (OBJECTS[type].model || type), type);
     this.cursor.hide();
-    this.hud.showPlaceBar(type, existing ? 0 : OBJECTS[type].cost);
+    this.hud.showPlaceBar(type, existing ? 0 : this.game.objectCost(type));
     this.updateGhost();
   }
 
@@ -438,6 +588,7 @@ class Controller {
     if (p.moveId) {
       g.moveObject(p.moveId, p.x, p.z, p.rot);
       this.objects.setHidden(p.moveId, false);
+      this.animals.setHomeHidden(p.moveId, false);
       this.audio.play('build');
       this.finishPlacement();
       return;
@@ -448,7 +599,7 @@ class Controller {
     const pos = objectCenter(g, o);
     const [w, d] = g.objSize(o.type, o.rot);
     this.effects.burst(pos, ['#d9c27a', '#ffffff', '#a87447'], 10 + w * d, 1.2);
-    this.effects.floatText(pos.setY(1.5), `-🪙${OBJECTS[o.type].cost}`, 'cost');
+    this.effects.floatText(pos.setY(1.5), `-🪙${g.lastPlaceCost ?? OBJECTS[o.type].cost}`, 'cost');
     // cheap decor: keep placing for quick fences/paths, otherwise exit
     if (OBJECTS[p.type].kind === 'decor' && g.s.coins >= OBJECTS[p.type].cost) {
       this.updateGhost();
@@ -462,7 +613,7 @@ class Controller {
   cancelPlacement() {
     const p = this.placing;
     if (!p) return;
-    if (p.moveId) this.objects.setHidden(p.moveId, false);
+    if (p.moveId) { this.objects.setHidden(p.moveId, false); this.animals.setHomeHidden(p.moveId, false); }
     this.finishPlacement();
   }
 
@@ -475,34 +626,67 @@ class Controller {
   // ------------------------------------------------------------------ bubbles
   updateBubbles() {
     const g = this.game;
-    const now = Date.now();
+    const now = g.now(); // same clock-guarded time as the rules
     const b = this.bubbles;
     b.mark();
     for (const e of this.animals.map.values()) {
+      if (!e.obj.visible) continue; // pen is being moved
       const a = e.a;
       const st = g.animalState(a, now);
       const def = ANIMALS[a.type];
       const h = a.type === 'cow' ? 1.15 : a.type === 'sheep' ? 0.95 : 0.65;
       const getPos = (out) => out.copy(e.obj.position).setY(h);
       const home = g.objById.get(a.home);
+      if (def.flying) continue; // hives show one bubble instead
       if (st === 'ready') b.set('a' + a.id, getPos, ITEMS[def.product].icon, 'ready', () => this.tendPen(home));
-      else if (st === 'hungry') b.set('a' + a.id, getPos, ITEMS[def.food].icon, 'need' + (g.count(def.food) >= def.foodQty ? '' : ' missing'), () => this.tendPen(home));
+      else if (st === 'hungry' && def.food) {
+        const f = g.animalFood(a.type);
+        b.set('a' + a.id, getPos, ITEMS[f.item].icon, 'need' + (g.count(f.item) >= f.qty ? '' : ' missing'), () => this.tendPen(home));
+      }
     }
     for (const o of g.s.objects) {
+      if (this.placing && this.placing.moveId === o.id) continue;
       const def = OBJECTS[o.type];
       const top = (out) => objectCenter(g, o, out).setY(o.type === 'orderboard' ? 1.7 : 2.6);
       if (def.kind === 'factory') {
         const q = g.factoryQueue(o, now);
         const done = q.filter((j) => j.done);
-        if (done.length) b.set('o' + o.id, top, done.map((j) => ITEMS[j.recipe].icon).join('') , 'ready', () => this.collectFactory(o));
+        if (done.length) b.set('o' + o.id, top, done.map((j) => ITEMS[j.recipe].icon).join('') , 'ready', () => { if (!this.collectFactory(o)) this.hud.openFactory(o); });
         else if (q.length) b.set('o' + o.id, top, `${ITEMS[q[0].recipe].icon}<div class="bar"><i style="width:${(q[0].progress * 100).toFixed(0)}%"></i></div>`, 'working', () => this.hud.openFactory(o));
         else b.set('o' + o.id, top, '💤', 'idle', () => this.hud.openFactory(o));
       } else if (def.kind === 'pen' && !g.animalsIn(o.id).length) {
         b.set('o' + o.id, (out) => objectCenter(g, o, out).setY(1.6), `+${ANIMALS[def.animal].icon}`, 'need', () => this.hud.openPen(o));
+      } else if (def.kind === 'pen' && ANIMALS[def.animal].flying) {
+        const ready = g.animalsIn(o.id).filter((a) => g.animalState(a, now) === 'ready').length;
+        const idle = g.animalsIn(o.id).some((a) => g.animalState(a, now) === 'hungry');
+        if (!ready && idle) b.set('o' + o.id, (out) => objectCenter(g, o, out).setY(1.8), '▶️', 'need', () => this.tendPen(o));
+        else if (ready) b.set('o' + o.id, (out) => objectCenter(g, o, out).setY(1.8), `${ITEMS[ANIMALS[def.animal].product].icon}×${ready}`, 'ready', () => this.tendPen(o));
+      } else if (def.kind === 'tree') {
+        const st = g.treeState(o, now);
+        if (st === 'ready') b.set('o' + o.id, (out) => objectCenter(g, o, out).setY(2.1), ITEMS[def.fruit].icon, 'ready', () => this.harvestTree(o));
+        else if (st === 'dead') b.set('o' + o.id, (out) => objectCenter(g, o, out).setY(1.4), '🪓', 'idle', () => this.hud.openTree(o));
       } else if (o.type === 'orderboard') {
         const ready = g.s.orders.some((x) => !x.waitUntil && g.hasItems(x.items));
         if (ready) b.set('o' + o.id, top, '✅', 'ready', () => this.hud.openOrders());
       }
+    }
+    const w = g.s.wagon;
+    if (w && w.state === 'here' && this.wagon.group.visible) {
+      const left = w.crates.filter((c) => !c.filled);
+      const ready = left.some((c) => g.count(c.item) >= c.qty);
+      b.set('wagon', (out) => out.copy(this.wagon.group.position).setY(2.4), `🛒<small>${w.crates.length - left.length}/${w.crates.length}</small>`, ready ? 'ready visitor' : 'idle visitor', () => this.hud.openOrders('wagon'));
+    }
+    for (const [id, def] of Object.entries(PROJECTS)) {
+      const site = PROJECT_SITES[id] || (id === 'master' && (() => { const h = g.s.objects.find((o) => o.type === 'farmhouse'); if (!h) return null; const c = objectCenter(g, h); return { x: c.x, z: c.z }; })());
+      if (!site || g.s.level < def.level) continue;
+      const st = g.s.projects?.[id]?.stage || 0;
+      if (st >= def.stages.length) continue;
+      b.set('p' + id, (out) => out.set(site.x, 2.8, site.z), `${def.icon}<small>🔨</small>`, 'need visitor', () => this.hud.openProject(id));
+    }
+    for (const e of this.visitors.map.values()) {
+      const v = e.v;
+      const enough = g.count(v.item) >= v.qty;
+      b.set('v' + v.id, (out) => out.copy(e.obj.position).setY(1.75), `${ITEMS[v.item].icon}<small>×${v.qty}</small>`, enough ? 'ready visitor' : 'need visitor', () => this.hud.openVisitor(v));
     }
     b.sweep();
   }
@@ -521,6 +705,9 @@ class Controller {
     this.objects.update(dt);
     this.animals.update(dt);
     this.dog.update(dt);
+    this.visitors.update(dt);
+    this.wagon.update(dt);
+    this.projects.update(dt);
     this.effects.update(dt);
     if (this.placing) this.updateGhost();
     this.bubbleTimer -= dt;

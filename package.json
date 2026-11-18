@@ -1,12 +1,15 @@
 {
   "name": "farmgame",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "scripts": {
     "dev": "vite --host",
     "build": "vite build",
-    "preview": "vite preview --host"
+    "preview": "vite preview --host",
+    "test": "node tools/test.mjs",
+    "sim": "node tools/sim.mjs --activeHours 8 --casualHours 1",
+    "sim:check": "node tools/sim.mjs --activeHours 8 --casualHours 1 --check 1"
   },
   "dependencies": {
     "three": "^0.187.0"
