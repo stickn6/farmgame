@@ -967,6 +967,34 @@ test('safety net never fires for the pacing bot', async () => {
   assert.equal(fired, 0);
 });
 
+test('sim (v4): bots open parcels and claim album pages for no XP or materials; --features off changes nothing before the first post coins', async () => {
+  const { run, FEATURES_OFF, v4Window } = await import('./sim.mjs');
+  const rnd = Math.random;
+  try {
+    // the active bot over 4.2 h: parcels #1–#5 at 5 m, 15 m, 30 m, 1 h and 4 h, page 1 claimed, no XP / materials
+    const on = run({ profile: 'active', hours: 4.2 });
+    assert.deepEqual(on.v4.parcels.map((p) => p.at), [5, 15, 30, 60, 240]);
+    assert.ok(on.v4.keepsakes.length >= 3, 'the clover, play finds and #5\'s keepsake');
+    assert.deepEqual(on.v4.leaks, { xp: 0, materials: 0 });
+    for (const t of Object.values(on.g.granted)) { assert.equal(t.xp, 0); assert.equal(t.materials, 0); }
+    // the same farm with the Post, album and charm off: identical levels until the first parcel coins (4 h) — the
+    // album draws from the save's own RNG, so orders, visitors and drops are untouched
+    const off = run({ profile: 'active', hours: 4.2, features: FEATURES_OFF });
+    assert.equal(off.v4.parcels.length, 0);
+    assert.equal(off.v4.keepsakes.length, 0);
+    assert.equal(off.g.albumOpen(), false);
+    for (const [L, m] of Object.entries(on.levelAt)) if (m <= 240) assert.equal(off.levelAt[L], m, `L${L}`);
+    assert.ok(on.levelAt[15] < 240, 'compares through L15');
+    // the day ledger: 2 parcels a day on an engaged run's days 2–4
+    const e = run({ profile: 'engaged', hours: 24 * 5 });
+    const w = v4Window(e, 2);
+    assert.equal(w.days, 3);
+    assert.equal(w.perDay, 2);
+    assert.ok(w.coinShare > 0 && w.coinShare < 0.08, `coin share ${w.coinShare}`);
+    assert.deepEqual(e.v4.leaks, { xp: 0, materials: 0 });
+  } finally { Math.random = rnd; }
+});
+
 test('first visitor is Mabel asking for something you hold; the next one is normal', () => {
   const g = fresh();
   g.addXp(CFG.xpForLevel(CFG.VISITORS.level));

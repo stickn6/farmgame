@@ -410,6 +410,57 @@ test('earn: broke, nothing growing or cooking, spare goods held → sell one (�
   assert.equal(r2.deadEnds.length, 1);
 });
 
+test('F1: no coins for seeds and empty soil → sell one spare even while timers run (the coins-blocked step, or the coached Meanwhile), then plant', () => {
+  // coached, saving for a cow at L5: 🪙0, wheat growing on all but two tiles, the chickens laying, spare wheat held
+  const starved = () => {
+    const g = coachedAt('cows', 5);
+    g.s.objects = g.s.objects.filter((o) => CFG.OBJECTS[o.type].kind !== 'debris');
+    const coop = put(g, 'coop', ...CFG.tutorialTile(CFG.TUTORIAL.lots.coop));
+    for (let i = 0; i < 2; i++) g.s.animals.push({ id: g.s.nextId++, type: 'chicken', home: coop.id, readyAt: g.now() + 60e3 }); // producing
+    g.rebuildOccupancy();
+    const tiles = Object.keys(g.s.soil);
+    tiles.forEach((k, i) => { g.s.soil[k].crop = i < 2 ? null : { type: 'wheat', plantedAt: g.now() }; });
+    g.s.coins = 0;
+    g.s.inventory = { wheat: 12 };
+    g.s.orders = g.s.orders.map((o, i) => ({ id: 960 + i, items: { corn: 9 }, coins: 60, xp: 6 })); // nobody wants wheat
+    g.s.chores = null;
+    return g;
+  };
+  const g = starved();
+  assert.ok(g.s.coins < g.cheapestSeedCost());
+  let s = planStep(g, {}, { cache: false });
+  assert.equal(s.block?.kind, 'coins');
+  assert.ok(s.key.includes('sellFew:wheat'), s.key);
+  assert.deepEqual(s.chain, ['btn:barn', 'storage:tab:silo', 'storage:item:wheat', 'storage:sell:wheat']);
+  assertKeys(s);
+  // not when a seed is affordable (it plants), nor with no empty soil (it waits for the timers)
+  const rich = starved();
+  rich.s.coins = CFG.CROPS.wheat.seedCost;
+  assert.ok(!planStep(rich, {}, { cache: false }).key.includes('sellFew'));
+  const full = starved();
+  for (const soil of Object.values(full.s.soil)) soil.crop ||= { type: 'wheat', plantedAt: full.now() };
+  assert.ok(!planStep(full, {}, { cache: false }).key.includes('sellFew'));
+  // the same farm waiting on its goal (milk on the way) gets it as the Meanwhile — coached only, never in the tour
+  const waiting = starved();
+  setQuest(waiting, 'milk');
+  const barn = put(waiting, 'cowbarn', ...waiting.findFreeSpot('cowbarn'));
+  waiting.s.animals.push({ id: waiting.s.nextId++, type: 'cow', home: barn.id, readyAt: waiting.now() + 120e3 });
+  s = planStep(waiting, {}, { cache: false });
+  assert.equal(s.kind, 'wait');
+  assert.ok(s.meanwhile?.key.startsWith('sellFew:wheat'), s.meanwhile?.key);
+  assertKeys(s);
+  const tour = starved();
+  tour.s.tutorial.mode = 'guided';
+  assert.ok(!recommendIdle(tour, {}).key.startsWith('sellFew'), 'the tour keeps its own Meanwhile');
+  // the follower sells one wheat and plants it again: a harvest comes long before every timer has run out
+  const sim = new SimUI(g);
+  const before = g.count('wheat');
+  let planted = false;
+  new GuideFollower(g, { sim, advance, onStep: () => { planted ||= Object.values(g.s.soil).every((x) => x.crop); } }).run({ maxSec: 40 });
+  assert.ok(planted, 'the empty soil was planted');
+  assert.ok(g.count('wheat') >= before - 2, 'one spare at a time');
+});
+
 test('placement: ✓ only for what the planner builds; a decor row the player started gets no finger (a follower backs out)', () => {
   const g = fresh();
   g.markSeen('welcome');

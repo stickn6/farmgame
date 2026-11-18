@@ -112,7 +112,7 @@ The planner behind all of this (`src/game/guide.js`) is pure: it reads the game 
 
 The goal: nobody unlocks everything in one sitting, the first 15 minutes are full of level-ups, and the framework leaves room for future content.
 
-Simulated with `tools/sim.mjs`. The bots play the real rules at realistic tap speed. The **guided beginner** is a new player who does exactly what Mabel points at. It follows the real planner through a headless HUD and costs:
+Simulated with `tools/sim.mjs`. The bots play the real rules at realistic tap speed. They open every parcel and claim every album page the moment they can (like the daily gift, at no tap cost), but never put up gifts or decorate. The **guided beginner** is a new player who does exactly what Mabel points at. It follows the real planner through a headless HUD and costs:
 - 4 s per tap, doubled the first time a kind of button is used;
 - 3 s per new Mabel line;
 - 6 s per level-up modal.
@@ -122,20 +122,24 @@ The beginner column is the median of 5 seeds, with the range in brackets, becaus
 | Milestone | Guided beginner (first sitting) | Non-stop efficient | Engaged (~40 min/day) | Casual (~30 min/day) | Light (~16 min/day) |
 |---|---|---|---|---|---|
 | Chickens (L2) / Bakery (L3) | 0.6 / 3 min | 0.1 / 0.9 min | same | same | same |
+| First parcel opened | 5:14 (in Chapter 1's egg wait) | 5 min | 5 min | 5 min | 5 min |
 | Chapter 1 (tour) done | 7.3 min | — | — | — | — |
 | Cows (L5) | 13 min | 8.5 min | 8.5 min | 4.5 h (2nd session) | 8.5 min |
-| Visitors (L7) | 27 min (26–31) | 24 min | day 1 | day 1 | day 1 |
-| L10 | 80 min (75–86) | 63 min | day 1 | day 1.2 | day 2 |
-| All scripted goals | 74 min (59–100) | — | — | — | — |
-| Market Wagon (L14) | — | 2.7 h | day 2 | day 2.6 | day 5 |
-| L20 | — | 7.4 h | day 5 | day 6.4 | day 11 |
-| L25 | — | — | day 9 | day 10 | day 17.5 |
-| **Last unlock (L30)** | — | **— (not in an 8 h sitting)** | **day 17** | **day 19** | **day 33** |
+| Visitors (L7) | 30 min (26–34) | 24 min | day 1 | day 1 | day 1 |
+| L10 | 83 min (78–84) | 63 min | day 1 | day 1.2 | day 2 |
+| All scripted goals | 72 min (63–104) | — | — | — | — |
+| Market Wagon (L14) | — | 2.7 h | day 2 | day 3 | day 5 |
+| L20 | — | 7.4 h | day 5 | day 6.2 | day 11 |
+| L25 | — | — | day 8.4 | day 10.4 | day 18 |
+| **Last unlock (L30)** | — | **— (not in an 8 h sitting)** | **day 16** | **day 20** | **day 34** |
+| Album pages 1–8 / all 12 | — | page 1 at 4 h | day 24 / day 44 | day 25 / day 51 | day 28 / day 84 |
 
 Other beginner figures (median of 5 seeds):
-- the longest gap between rewards in the first 30 minutes is 95 s (worst seed 120 s);
-- about half the time is spent waiting on timers;
-- the Silo first reaches 90% at about 18 minutes.
+- the longest gap between rewards (harvests, collections, goods, orders, visitors, parcels, keepsakes, goals, levels) in the first 30 minutes is 93 s (worst seed 128 s);
+- about a third of the time is spent waiting on timers;
+- the Silo first reaches 90% at about 15 minutes.
+
+**The Post and the album** never pay XP or building materials, and the first coins come at 4 hours. On days 2–30 they add, per day: 2 parcels, coins and pantry goods worth about 3% of the coins a player earns (engaged 3.1%, casual 3.3%, light players 5.3%, as intended catch-up), and about 6 new gems. With them turned off (`--features off`) the non-stop bot reaches every level up to L16 at exactly the same minute (the album draws from the save's own random numbers, so orders, visitors and drops don't change), and the engaged bot's L30 over 12 seeds is day 15.8 against 16.0 without them (a single seed can move by up to about three days either way).
 
 Before the v2 pacing update, the simulated player unlocked **everything in ~12 minutes**. The bots play efficiently, so real players will probably take 20–30% longer.
 
@@ -149,7 +153,7 @@ How it's paced:
 - **Catch-up rewards.** Chores, wagon crates and project stages pay a fixed *share of your current level*. That helps casual players without letting fast players race ahead.
 
 Commands:
-- `npm run sim` prints a pacing report. `--profile active|casual|engaged|light|beginner` runs one profile; `--seeds n` sets the number of beginner seeds.
+- `npm run sim` prints a pacing report, with a Post / album line per profile and each beginner seed's first parcel. `--profile active|casual|engaged|light|beginner` runs one profile; `--seeds n` sets the number of beginner seeds; `--seed n` picks the bots' seed; `--features off` turns the Post, the album and ribbons off (for an A/B; the v4 checks are skipped).
 - `npm run sim:check` fails if a balance change breaks these targets:
   - **Non-stop bot:**
     - L6 within 15 minutes, but L5 no sooner than 6.5 minutes and L7 no sooner than 18;
@@ -166,6 +170,14 @@ Commands:
     - no gap over 180 s between rewards in the first 30 minutes;
     - no planner dead ends.
   - **Guided beginner, median seed:** every scripted goal done within 90 minutes.
+  - **The Post and the album** (one seed each):
+    - parcels, album pages and ribbons pay no XP and no building materials (measured around every bot claim, and in `grant()`'s tallies);
+    - the non-stop bot opens parcels #1–#5 at 5 min, 15 min, 30 min, 1 h and 4 h; the engaged bot opens 1.8–2.2 a day on days 2–30;
+    - on the engaged bot's days 2–30, the Post's coins and goods stay within 4% of the coins it earns, and parcels plus album pages give at most 7 gems a day;
+    - the guided beginner opens parcel #1 between 5:00 and 6:30, before Chapter 1 ends (every seed);
+    - the album isn't filled absurdly early: at most 16 keepsakes in 8 hours of non-stop play; the engaged bot completes pages 1–8 between day 15 and day 35, and all 12 between day 35 and day 60 (its run is 60 days);
+    - the welcome parcels #1–#4 hold no coins or goods;
+    - levels 31, 35, 37 and 39 unlock something (album pages).
 
 To add content, use the reserved levels 31+ (`FUTURE_SLOTS` in config.js). Give the new thing a level and a timer, and the price/XP formulas in config.js price it for you.
 

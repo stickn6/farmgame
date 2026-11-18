@@ -625,8 +625,9 @@ function busyStep(g) {
 
 // The last way to coins when nothing grows, works or comes by itself: sell one spare item at a time
 // (📦 → its tab → the item → Sell 1). Spare: above the reserves; the one you hold most of (ties: the cheaper).
-function sellFewStep(g, ui) {
-  if (timers(g).length) return null;
+// opts.force: also while timers run (F1, a farm with no coins for seeds and empty soil to plant).
+function sellFewStep(g, ui, { force = false } = {}) {
+  if (!force && timers(g).length) return null;
   const res = reserves(g);
   let best = null;
   for (const [item, n] of Object.entries(g.s.inventory)) {
@@ -641,6 +642,14 @@ function sellFewStep(g, ui) {
     { chain: ['btn:barn', `storage:tab:${id}`, `storage:item:${item}`, `storage:sell:${item}`], stepKey: 'sellFew', storage: id, item, icon: ITEMS[item].icon, label: 'Sell a spare' });
 }
 
+// F1 (v4 §5.4): a farm that can't afford the cheapest seed but has empty soil sells one spare (even
+// while its timers run), then plants, instead of sitting out every timer with nothing to do: the coins-blocked
+// step (earn) and, outside the tour, the Meanwhile of a goal that waits.
+function starvedSellStep(g, ui) {
+  if (g.s.coins >= g.cheapestSeedCost() || !emptyPatches(g).length) return null;
+  return sellFewStep(g, ui, { force: true });
+}
+
 // ---------------------------------------------------------------- earn (§2.3) and Meanwhile (§2.4)
 // The best way to make n more coins (or XP with { xp: true }, where planting ranks higher).
 export function earn(game, ui = {}, n = 0, { xp = false } = {}) {
@@ -649,7 +658,7 @@ export function earn(game, ui = {}, n = 0, { xp = false } = {}) {
   const tries = xp
     ? [choreStep, collectStep, harvestAny, plantIdle, deliverStep, serveStep, feedStep, makeIdle, debrisStep, plowIdle]
     : [choreStep, postCoinsStep, deliverStep, serveStep, collectStep, harvestAny, (gg, u) => sellStep(gg, u, 'silo', Math.min(n, 20)) || sellStep(gg, u, 'barn', Math.min(n, 20)),
-      plantIdle, feedStep, makeIdle, debrisStep, sellFewStep];
+      starvedSellStep, plantIdle, feedStep, makeIdle, debrisStep, sellFewStep];
   for (const f of tries) {
     const s = f(g, ui);
     if (s) return { ...s, why: 'quest' };
@@ -673,6 +682,7 @@ export function recommendIdle(game, ui = {}, { saveFor = 0 } = {}) {
     !gd || saving(g) || saveFor > g.s.coins ? deliverStep : null,
     makeIdle,
     plantIdle,
+    gd ? null : starvedSellStep, // F1: no coins for seeds but empty soil — sell a spare, then plant
     debrisStep,
     gd ? null : (gg, u) => plowIdle(gg, u, saveFor),
   ];
