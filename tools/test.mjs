@@ -306,7 +306,7 @@ test('v1 saves migrate without losing progress', () => {
   };
   st.setItem('sunny-acres-save-v1', JSON.stringify(v1));
   const g = fresh(st);
-  assert.equal(g.s.version, 3);
+  assert.equal(g.s.version, 4);
   assert.equal(g.s.coins, 777);
   assert.equal(g.s.level, 6, 'level kept');
   assert.ok(g.s.xp >= CFG.xpForLevel(6));
@@ -1087,7 +1087,7 @@ test('v2 saves: every goal maps by id, repeat goals keep their place and progres
   for (let old = 0; old <= 20; old++) {
     const snap = { text: 'Frozen goal', event: 'harvest', count: 999, reward: { coins: 1, xp: 1 }, index: old };
     const g = loadSave(v2Save({ index: old, progress: 3, notified: false, ...(old >= 17 ? { snap } : {}) }));
-    assert.equal(g.s.version, 3);
+    assert.equal(g.s.version, 4);
     if (old < CFG.V2_QUEST_COUNT) {
       assert.equal(g.currentQuest().id, CFG.QUEST_MIGRATION_V3[old], 'old ' + old);
       assert.equal(g.s.quest.qid, CFG.QUEST_MIGRATION_V3[old]);
@@ -1127,7 +1127,7 @@ test('v1 saves past the old goal list land on the first repeat goal', () => {
   const v1 = { version: 1, coins: 10, xp: 0, level: 9, landSize: 16, soil: {}, objects: [{ id: 1, type: 'farmhouse', x: 9, z: 9, rot: 0, jobs: [] }],
     animals: [], inventory: {}, orders: [], quest: { index: 20, progress: 0 }, nextId: 5, stats: { harvested: 0, orders: 0 }, settings: { sound: true, music: true }, createdAt: t };
   const g = loadSave(v1);
-  assert.equal(g.s.version, 3);
+  assert.equal(g.s.version, 4);
   assert.equal(g.s.quest.index, CFG.QUESTS.length);
   assert.equal(g.s.quest.qid, 'repeat:0');
 });
@@ -1323,6 +1323,320 @@ test('settings: the camera view and two-finger turn are saved; new farms default
   const g2 = fresh(st);
   assert.deepEqual(g2.s.settings.cam, { yaw: 2.3562, pitch: 1.07 });
   assert.equal(g2.s.settings.twist, false);
+});
+
+// ---------------------------------------------------------------- v4: the Post (§2) and its foundations (§6)
+const MIN = 60, HOUR = 3600;
+const P = CFG.POST.coins;
+const toReady = (g) => { t = Math.max(t, g.s.post.nextAt); };
+// a v3 save as the previous release wrote it (no post, album, charm or rng)
+const v3Save = ({ level = 4, ageH = 1, tour = true, mode = 'coached' } = {}) => {
+  const g = fresh();
+  const s = JSON.parse(JSON.stringify(g.s));
+  s.version = 3;
+  for (const k of ['post', 'album', 'charm', 'rng']) delete s[k];
+  s.level = level; s.xp = CFG.xpForLevel(level);
+  s.createdAt = t - ageH * 3600000;
+  s.tutorial.startedAt = tour ? s.createdAt : 0;
+  s.tutorial.mode = mode;
+  delete s.settings.cam; delete s.settings.twist;
+  return s;
+};
+
+test('post schedule: #1 at 5:00; prompt opens at 5 m, 15 m, 30 m, 1 h, 4 h, 12 h, 20 h, 28 h; a late open shifts the chain', () => {
+  const g = fresh();
+  const t0 = g.s.createdAt;
+  assert.equal(g.s.post.nextAt, t0 + 5 * 60000);
+  advance(5 * MIN - 1);
+  assert.equal(g.postStatus().ready, false, 'not at 4:59');
+  assert.equal(g.claimPost(), null);
+  advance(1);
+  assert.equal(g.postStatus().ready, true, 'ready at 5:00');
+  const ages = [];
+  for (let i = 0; i < 8; i++) {
+    toReady(g);
+    assert.equal(g.postStatus().ready, true);
+    g.claimPost();
+    ages.push((t - t0) / 60000);
+  }
+  assert.deepEqual(ages, [5, 15, 30, 60, 240, 720, 1200, 1680]);
+  assert.equal(g.stat('parcels'), 8);
+  // opening late: the next countdown starts at the moment you open
+  toReady(g);
+  advance(5 * HOUR);
+  g.claimPost();
+  assert.equal(g.s.post.nextAt, t + 8 * HOUR * 1000);
+  assert.equal(g.s.post.lastAt, t);
+});
+
+test('post: no stacking — after 3 days exactly one parcel waits; opening it starts the next countdown', () => {
+  const g = fresh();
+  g.s.post.n = 6;
+  g.s.post.nextAt = t + 3600000;
+  advance(3 * 24 * HOUR);
+  assert.equal(g.postStatus().ready, true);
+  const r = g.claimPost();
+  assert.ok(r && r.n === 6);
+  assert.equal(g.s.post.nextAt, t + 8 * HOUR * 1000);
+  assert.equal(g.postStatus().ready, false);
+  assert.equal(g.claimPost(), null, 'a second open gets nothing');
+  assert.equal(g.stat('parcels'), 1);
+});
+
+test('post clock: a rewound clock freezes it; a save from the future is clamped on load; msLeft ≤ the gap', () => {
+  const st = new MemStorage();
+  const g = fresh(st);
+  g.s.post.n = 5;
+  toReady(g);
+  g.claimPost();
+  const next = g.s.post.nextAt;
+  g.save();
+  advance(-2 * 24 * HOUR);
+  assert.equal(g.postStatus().ready, false, 'clock set back 2 days');
+  assert.equal(g.s.post.nextAt, next, 'nextAt unchanged');
+  assert.ok(g.postStatus().msLeft <= CFG.POST.every * 1000);
+  // reloading with the clock still set back never makes it ready (time is pinned to when the save was last seen)
+  const g2 = fresh(st);
+  assert.equal(g2.postStatus().ready, false);
+  assert.equal(g2.s.post.nextAt, next);
+  advance(2 * 24 * HOUR);
+  // a save whose nextAt is 3 days ahead
+  const st2 = new MemStorage();
+  const h = fresh(st2);
+  h.s.post.n = 2;
+  h.s.post.nextAt = t + 3 * 24 * 3600000;
+  h.save();
+  const h2 = fresh(st2);
+  assert.equal(h2.s.post.nextAt, t + (15 * MIN + 5 * MIN) * 1000, 'clamped to now + gapFor(n) + 5 min');
+  for (const n of [0, 1, 2, 3, 4, 5, 9]) {
+    h2.s.post.n = n;
+    h2.s.post.nextAt = t + 10 * 24 * 3600000;
+    const s = h2.postStatus();
+    assert.ok(s.msLeft <= (CFG.POST.gaps[n] ?? CFG.POST.every) * 1000 && s.progress >= 0 && s.progress <= 1, `msLeft ≤ gap (n ${n})`);
+  }
+});
+
+test('post contents: the welcome five, the 4-cycle, P(L), the pantry worth exactly P(L), keepsake fallback, golds, office', () => {
+  const g = fresh();
+  // P(L) (§2.2)
+  const table = { 6: 75, 8: 115, 10: 160, 12: 210, 14: 260, 16: 320, 18: 380, 20: 445, 22: 515, 24: 590, 26: 665, 28: 740, 30: 820, 33: 950, 35: 1035, 40: 1265 };
+  for (const [L, v] of Object.entries(table)) assert.equal(P(+L), v, `P(${L})`);
+  // welcome #1–#5 (§2.3): gems, the clover and the Mailbox only; no coins or items before 4 h
+  const want = [
+    { kind: 'welcome', sender: 'mabel', gems: 2 }, { kind: 'welcome', sender: 'rosa', gems: 2 },
+    { kind: 'welcome', sender: 'kip', gems: 2, keepsake: 'meadow:clover' }, { kind: 'welcome', sender: 'hank', gems: 3, gift: 'mailbox', place: true },
+    { kind: 'big', sender: 'mabel', gems: 5, coins: true, keepsake: true },
+  ];
+  let gems = 0;
+  for (let n = 0; n < 5; n++) {
+    const c = g.postContents(n, 9);
+    const w = want[n];
+    assert.equal(c.kind, w.kind, `#${n + 1} kind`);
+    assert.equal(c.sender, w.sender, `#${n + 1} sender`);
+    assert.equal(c.gems, w.gems, `#${n + 1} gems`);
+    assert.equal(c.keepsake, w.keepsake || null, `#${n + 1} keepsake`);
+    assert.equal(c.gift, w.gift || null);
+    assert.equal(c.place, !!w.place);
+    assert.equal(c.coins, w.coins ? P(9) : 0, `#${n + 1} coins`);
+    assert.deepEqual(c.items, {});
+    assert.ok(c.note && [...c.note].length <= 85, `#${n + 1} note`);
+    gems += c.gems;
+  }
+  assert.ok(gems <= 15, 'welcome gems ≤ 15');
+  // #6 onwards (§2.4): keepsake · pantry · postcard · big, senders by level
+  const kinds = [5, 6, 7, 8, 9, 10, 11, 12].map((n) => g.postContents(n, 12).kind);
+  assert.deepEqual(kinds, ['keepsake', 'pantry', 'postcard', 'big', 'keepsake', 'pantry', 'postcard', 'big']);
+  const send = (n, L) => g.postContents(n, L).sender;
+  assert.deepEqual([send(5, 6), send(5, 7), send(5, 21), send(9, 21), send(13, 21)], ['mabel', 'kip', 'kip', 'juno', 'kip']);
+  assert.deepEqual([send(6, 6), send(6, 7)], ['mabel', 'rosa']);
+  assert.deepEqual([send(7, 10), send(7, 11), send(7, 16), send(11, 16), send(11, 15)], ['mabel', 'theo', 'theo', 'hank', 'theo']);
+  assert.equal(send(8, 30), 'mabel');
+  const ks = g.postContents(5, 12), pc = g.postContents(7, 12), big = g.postContents(8, 12);
+  assert.deepEqual([ks.gems, ks.keepsake, ks.keepsakeFallback, ks.coins], [1, true, 2, 0]);
+  assert.deepEqual([pc.gems, pc.keepsake, pc.coins, pc.wrap], [2, null, 0, 'postcard']);
+  assert.deepEqual([big.gems, big.keepsake, big.coins, big.wrap, big.gift], [4, true, P(12), 'big', null]);
+  // recurring notes rotate per round of four (verbatim from config)
+  assert.equal(g.postContents(5, 12).note, CFG.POST.notes.kip[0]);
+  assert.equal(g.postContents(9, 22).note, CFG.POST.notes.juno[1]);
+  assert.equal(g.postContents(17, 12).note, CFG.POST.notes.kip[0], 'round 3 wraps to the first note');
+  // the pantry: always worth exactly P(L), as goods when they fit (computed examples from §2.4)
+  assert.deepEqual(g.postContents(6, 8).items, { cookie: 2 });
+  assert.equal(g.postContents(6, 8).coins, 15);
+  assert.deepEqual(g.postContents(6, 14).items, { tomjuice: 2 });
+  assert.deepEqual(g.postContents(6, 35).items, { shirt: 2 });
+  for (let L = 3; L <= 45; L++) {
+    const c = g.postContents(6, L);
+    const value = c.coins + Object.entries(c.items).reduce((s, [i, n]) => s + n * CFG.ITEMS[i].price, 0);
+    assert.equal(value, P(L), `pantry L${L}`);
+    for (const [i, n] of Object.entries(c.items)) {
+      assert.ok(n <= CFG.POST.pantryMaxQty && CFG.ITEMS[i].price <= P(L) / 2 && CFG.ITEMS[i].cat !== 'material', `pantry L${L} ${i}`);
+      const r = CFG.RECIPES[i];
+      assert.ok(Math.max(r.level || 0, CFG.OBJECTS[r.building].level) <= L - 1, `unlocked a level ago (L${L} ${i})`);
+    }
+  }
+  // the Barn-full path pays the same value in coins (with a toast)
+  const full = fresh();
+  full.s.level = 14; full.s.xp = CFG.xpForLevel(14);
+  full.s.post.n = 6;
+  full.s.inventory.egg = full.storageCap('barn');
+  const coins = full.s.coins;
+  const toasts = [];
+  full.on('toast', (x) => toasts.push(x.text));
+  toReady(full);
+  const r = full.claimPost();
+  assert.equal(r.kind, 'pantry');
+  assert.equal(full.s.coins - coins, P(14), 'Barn full: coins instead');
+  assert.equal(full.count('tomjuice'), 0);
+  assert.ok(toasts.some((x) => /Barn was full, so Rosa sent coins instead/.test(x)));
+  // keepsake fallback: nothing missing on an open page → 💎2 instead
+  const k = fresh();
+  for (const p of CFG.ALBUM.pages) for (const [it] of p.items) k.s.album.have[`${p.id}:${it}`] = 1;
+  k.s.album.open = true;
+  k.s.post.n = 5;
+  toReady(k);
+  const gems0 = k.s.gems;
+  const kr = k.claimPost();
+  assert.equal(k.s.gems - gems0, 1 + 2);
+  assert.ok(!kr.tiles.some((x) => x.kind === 'keepsake'));
+  // golds: every 3rd Big parcel (n = 16, 28), then 💎3
+  const bigs = [8, 12, 16, 20, 24, 28, 32, 36, 40].map((n) => g.postContents(n, 20));
+  assert.deepEqual(bigs.map((c) => c.gift), [null, null, 'goldscarecrow', null, null, 'goldlamp', null, null, null]);
+  assert.deepEqual(bigs.map((c) => c.gems), [4, 4, 4, 4, 4, 4, 4, 4, 4 + 3]);
+  assert.ok(bigs.every((c) => !c.place), 'golds are never placed right away');
+  for (const type of CFG.POST.golds) {
+    const d = CFG.OBJECTS[type];
+    assert.ok(d && d.kind === 'decor' && d.level === 99 && d.cost === 0 && d.tint === 'gold' && CFG.OBJECTS[d.model], type);
+  }
+  // the office parcel
+  const o = fresh();
+  o.s.post = { n: 5, nextAt: t, lastAt: 0, office: true, notified: false };
+  o.s.level = 20;
+  const oc = o.postContents();
+  assert.deepEqual([oc.kind, oc.sender, oc.gems, oc.coins, oc.keepsake, oc.gift, oc.place, oc.wrap], ['office', 'hank', 5, P(20), 'meadow:clover', 'mailbox', true, 'big']);
+  assert.equal(oc.note, CFG.POST.office.note);
+});
+
+test('post: zero faucets — 400 parcels at random levels give no XP, no materials, no level-up; grant() refuses materials and XP', () => {
+  const g = fresh();
+  const r = rng(42);
+  let levelups = 0;
+  g.on('levelup', () => levelups++);
+  const mats = () => Object.entries(g.s.inventory).filter(([i]) => CFG.ITEMS[i].cat === 'material').reduce((s, [, n]) => s + n, 0);
+  const m0 = mats();
+  for (let i = 0; i < 400; i++) {
+    const L = 1 + Math.floor(r() * 45);
+    g.s.level = L; g.s.xp = CFG.xpForLevel(L);
+    toReady(g);
+    const res = g.claimPost();
+    assert.ok(res, `parcel ${i}`);
+    assert.equal(g.s.xp, CFG.xpForLevel(L), 'no XP');
+    assert.equal(g.s.level, L);
+    if (i % 25 === 0) for (const k of Object.keys(g.s.inventory)) if (CFG.ITEMS[k].cat !== 'material') delete g.s.inventory[k]; // keep Barn room
+  }
+  assert.equal(levelups, 0);
+  assert.equal(mats(), m0, 'no materials');
+  assert.equal(g.granted.post.xp, 0);
+  assert.equal(g.granted.post.materials, 0);
+  for (const i of Object.keys(g.granted.post.items)) assert.notEqual(CFG.ITEMS[i].cat, 'material');
+  assert.throws(() => g.grant('test', { items: { plank: 1 } }), /materials/);
+  assert.throws(() => g.grant('test', { xp: 5 }), /XP/);
+  assert.equal(g.count('plank'), 0);
+});
+
+test('post RNG: Math.random is never used; the same seed picks the same keepsakes; a save round-trip continues the sequence', () => {
+  // Math.random throws while parcels are opened (building a Game still rolls its first orders)
+  const noRandom = (fn) => { const orig = Math.random; Math.random = () => { throw new Error('Math.random used'); }; try { return fn(); } finally { Math.random = orig; } };
+  const picks = (g, n) => noRandom(() => { const out = []; for (let i = 0; i < n; i++) { toReady(g); const r = g.claimPost(); out.push(r.tiles.find((x) => x.kind === 'keepsake')?.id || null); } return out; });
+  const t0 = t;
+  const g1 = fresh();
+  g1.s.post.n = 4; // #5 onwards: random keepsakes
+  const a = picks(g1, 12);
+  t = t0;
+  const g2 = fresh();
+  g2.s.post.n = 4;
+  const b = picks(g2, 12);
+  // save after 6, reload, carry on: the same 12
+  t = t0;
+  const st = new MemStorage();
+  const g3 = fresh(st);
+  g3.s.post.n = 4;
+  const c = picks(g3, 6);
+  g3.save();
+  c.push(...picks(fresh(st), 6));
+  assert.ok(a.filter(Boolean).length >= 5, 'keepsakes picked');
+  assert.deepEqual(a, b, 'same seed, same picks');
+  assert.deepEqual(c, a, 'a reload continues the sequence');
+  assert.equal(new Set(a.filter(Boolean)).size, a.filter(Boolean).length, 'never a duplicate');
+  // rand(): [0, 1), saved state
+  const g = fresh();
+  const s0 = g.s.rng;
+  for (let i = 0; i < 1000; i++) { const x = g.rand(); assert.ok(x >= 0 && x < 1); }
+  assert.notEqual(g.s.rng, s0);
+  assert.equal(fresh().s.rng, ((t ^ 0x9e3779b9) >>> 0) || 1, 'seeded from createdAt');
+});
+
+test('migration v3 → v4: young farms get the welcome, veterans the office parcel and What\'s new; twice is harmless', () => {
+  // a young tour farm: the whole welcome, #1 at least a minute away
+  const young = loadSave(v3Save({ level: 4, ageH: 1 }));
+  assert.equal(young.s.version, 4);
+  assert.equal(young.s.post.n, 0);
+  assert.equal(young.s.post.office, false);
+  assert.ok(young.s.post.nextAt >= t + 60000, 'ready ≥ now + 60 s');
+  assert.equal(young.postStatus().ready, false);
+  assert.ok(!young.hasSeen('whatsNew:pending'));
+  assert.deepEqual([young.s.settings.cam, young.s.settings.twist], [null, true]);
+  assert.equal(young.s.rng, ((young.s.createdAt ^ 0x9e3779b9) >>> 0) || 1);
+  assert.equal(loadSave(v3Save({ level: 4, ageH: 0.1 })).s.post.nextAt, t + 60000, 'a 6-minute-old farm: #1 a minute after the update');
+  assert.equal(loadSave(v3Save({ level: 1, ageH: 0.02 })).s.post.nextAt, t - 72000 + 5 * 60000, 'a brand-new farm keeps its 5:00');
+  for (const s of [v3Save({ level: 4, ageH: 5 }), v3Save({ level: 7, ageH: 1 }), v3Save({ level: 3, ageH: 1, tour: false })]) {
+    assert.equal(loadSave(s).s.post.office, true, 'old, past L6 or never toured → office');
+  }
+  // an L20 veteran: the office parcel waits now; after it, 8 h and the cycle from the keepsake slot
+  const vet = loadSave(v3Save({ level: 20, ageH: 200, mode: 'independent' }));
+  const st = vet.postStatus();
+  assert.ok(st.ready && st.office && st.kind === 'office' && !st.intro);
+  assert.ok(vet.hasSeen('whatsNew:pending'));
+  const gems = vet.s.gems, coins = vet.s.coins;
+  const r = vet.claimPost();
+  assert.ok(r.office);
+  assert.equal(vet.s.gems - gems, 5);
+  assert.equal(vet.s.coins - coins, P(20));
+  assert.ok(vet.albumOpen() && vet.s.album.have['meadow:clover'], 'the clover opens the album');
+  assert.deepEqual(vet.s.gifts, ['mailbox']);
+  assert.deepEqual(r.gift, { type: 'mailbox', place: true });
+  assert.equal(vet.s.post.office, false);
+  assert.equal(vet.s.post.n, 5, 'n stays 5');
+  assert.equal(vet.s.post.nextAt, t + 8 * HOUR * 1000);
+  assert.equal(r.next.kind, 'keepsake');
+  assert.equal(vet.postStatus().kind, 'keepsake');
+  // an L40 save: tips of levels already reached are seen; migrating twice changes nothing
+  const old = loadSave(v3Save({ level: 40, ageH: 900, mode: 'independent' }));
+  for (const l of [31, 35, 37, 39]) assert.ok(old.hasSeen('tip:' + l), `tip:${l}`);
+  assert.ok(!loadSave(v3Save({ level: 30, ageH: 900 })).hasSeen('tip:31'));
+  const snap = JSON.stringify(old.s);
+  old.migrate(old.s);
+  assert.equal(JSON.stringify(old.s), snap, 'migrating twice is harmless');
+  // v1 / v2 fixtures come through v3 to v4 as established farms
+  const v2 = loadSave(v2Save({ index: 9, progress: 0 }, 8));
+  assert.equal(v2.s.version, 4);
+  assert.ok(v2.postStatus().office);
+});
+
+test('save round-trip: post, album, charm, rng and settings.cam', () => {
+  const st = new MemStorage();
+  const g = fresh(st);
+  toReady(g); g.claimPost();
+  toReady(g); g.claimPost();
+  toReady(g); g.claimPost(); // Kip's clover
+  g.rand(); g.rand();
+  g.s.charm.vouchers = 2;
+  g.s.settings.cam = { yaw: 3.9270, pitch: 0.79 };
+  g.save();
+  const g2 = fresh(st);
+  for (const k of ['post', 'album', 'charm', 'rng']) assert.deepEqual(g2.s[k], g.s[k], k);
+  assert.deepEqual(g2.s.settings.cam, g.s.settings.cam);
+  assert.equal(g2.s.version, 4);
+  assert.equal(g2.rand(), g.rand(), 'the RNG carries on');
 });
 
 let pass = 0, fail = 0;

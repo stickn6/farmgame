@@ -10,7 +10,7 @@ import { FarmView, ObjectView, AnimalView, DogView, VisitorView, WagonView, Proj
 import { Effects } from './game/effects.js';
 import { Audio } from './game/audio.js';
 import { Input } from './game/input.js';
-import { HUD, fmtTime } from './ui/hud.js';
+import { HUD, fmtTime, postClock } from './ui/hud.js';
 import { Bubbles } from './ui/bubbles.js';
 import { GuideController } from './ui/guide-ui.js';
 import './game/models/index.js';
@@ -347,7 +347,7 @@ class Controller {
     if (this.guide.onKey(e)) return; // Mabel's own welcome / skip question
     const k = e.key.toLowerCase();
     const modal = this.hud.topModal();
-    if (modal) { if (k === 'escape' || k === 'enter') this.hud.closeTopModal(); return; }
+    if (modal) { if (k === 'escape' || k === 'enter') this.hud.closeTopModal(k); return; }
     if (k === 'escape' && this.hud.camPadOpen()) { this.hud.closeCamPad(); return; }
     if (k === 'escape') { if (this.hud.panel) this.hud.closePanel(); else if (this.placing) this.cancelPlacement(); else this.setTool('hand'); }
     // turn (90°), tilt and Home: no-ops while a hard beat holds the camera
@@ -479,7 +479,16 @@ class Controller {
       return;
     }
     if (def.kind === 'storage') { this.hud.openBarn(def.storage); return; }
+    // the Mailbox: its parcel, or when the next one comes
+    if (o.type === 'mailbox') { this.tapMailbox(); return; }
     if (def.kind === 'decor') this.hud.openDecor(o);
+  }
+
+  tapMailbox() {
+    const st = this.game.postStatus();
+    this.audio.play('click');
+    if (st.ready) this.hud.showPost();
+    else this.hud.toast(`📪 Next parcel in ${postClock(st.msLeft)}`, 'info');
   }
 
   bounce(o) {
@@ -670,6 +679,16 @@ class Controller {
     }
   }
 
+  // the parcel modal's Open! ✨ (hud.showPost): the parcel opens now; the Mailbox goes up once the modal has closed
+  claimPost() {
+    const r = this.game.claimPost();
+    if (!r) return null;
+    this.audio.play(r.wrap === 'big' || r.gift?.place ? 'levelup' : 'quest');
+    try { navigator.vibrate?.(15); } catch (e) { /* not on every device */ }
+    if (r.gift?.place) this.guide.postGift(r.gift.type);
+    return r;
+  }
+
   claimQuest() {
     const q = this.game.claimQuest();
     if (!q) return;
@@ -800,6 +819,7 @@ class Controller {
     const g = this.game;
     const now = g.now(); // same clock-guarded time as the rules
     const b = this.bubbles;
+    const postReady = g.postStatus().ready;
     b.mark();
     for (const e of this.animals.map.values()) {
       if (!e.obj.visible) continue; // pen is being moved
@@ -840,6 +860,8 @@ class Controller {
       } else if (o.type === 'orderboard') {
         const ready = g.s.orders.some((x) => !x.waitUntil && g.hasItems(x.items));
         if (ready) b.set('o' + o.id, top, '✅', 'ready', () => this.hud.openOrders());
+      } else if (o.type === 'mailbox' && postReady) {
+        b.set('o' + o.id, (out) => objectCenter(g, o, out).setY(1.6), '📬', 'ready', () => { this.audio.play('click'); this.hud.showPost(); });
       }
     }
     const w = g.s.wagon;

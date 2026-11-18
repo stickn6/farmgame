@@ -8,6 +8,7 @@ import './guide.css';
 import { ITEMS, OBJECTS, ANIMALS, CHAPTERS, QUESTS, TUTORIAL, GUIDE, VISITORS, RECIPES, CAMERA } from '../game/config.js';
 import {
   planStep, need, nextMode, questCardInfo, shouldAutoShowDaily, levelUpGo, pendingTip, graduationPending, fieldCentre, reserves,
+  mailboxNear, markTipSeen,
 } from '../game/guide.js';
 import { tileToWorld } from '../game/world.js';
 import { objectCenter } from '../game/views.js';
@@ -28,11 +29,12 @@ const MEANWHILE_LINE = 3; // s the goal's line shows before the Meanwhile line t
 const FLASH = 4.5; // s a one-off line stays on the card
 const TIP_GAP = 45; // s between FEATURE_TIPS
 const GLOW_NEW = 4; // s a new goal's target glows (coached)
-const PRIORITY = { chest: 2, gift: 3, daily: 4 }; // anything else (tips, interrupt toasts) is 5
+const PRIORITY = { chest: 2, gift: 3, postGift: 3, daily: 4 }; // anything else (tips, interrupt toasts) is 5
+const POST_AWAY_AFTER = 20; // s after start: "A parcel came while you were away" (once per session)
 const IDLE_EVENTS = ['soil', 'animalChanged', 'animalAdded', 'factoryChanged', 'objectAdded', 'orderDone', 'visitorServed', 'quest',
-  'daily', 'chores', 'land', 'storageUpgraded', 'debrisCleared'];
+  'daily', 'chores', 'land', 'storageUpgraded', 'debrisCleared', 'post'];
 const PLAN_EVENTS = [...IDLE_EVENTS, 'coins', 'inventory', 'levelup', 'orders', 'visitors', 'treeChanged', 'objectRemoved', 'objectMoved',
-  'questComplete', 'tutorial', 'gifts', 'chapter', 'wagon'];
+  'questComplete', 'tutorial', 'gifts', 'chapter', 'wagon', 'postReady', 'keepsake', 'album', 'charm'];
 
 const nowS = () => performance.now() / 1000;
 const shown = (el) => !!el && el.isConnected && !el.closest('.hud-hidden, .hidden');
@@ -393,7 +395,7 @@ export class GuideLayer {
   topEdge(over) {
     if (over) return 8;
     let b = 0;
-    for (const el of [this.hud.levelBoxEl, this.hud.questCard, this.hud.pills, this.hud.roundBtns, this.hud.camBtn, this.hud.toolHint]) if (shown(el)) b = Math.max(b, el.getBoundingClientRect().bottom);
+    for (const el of [this.hud.levelBoxEl, this.hud.questCard, this.hud.pills, this.hud.roundBtns, this.hud.postPill, this.hud.camBtn, this.hud.toolHint]) if (shown(el)) b = Math.max(b, el.getBoundingClientRect().bottom);
     return b + 8;
   }
 
@@ -627,6 +629,13 @@ export class GuideController {
       if (!g.hasSeen('firstDrop') && g.tutorialMode() !== 'independent' && !this.dropInterrupt) this.dropInterrupt = { key: 'firstDrop', item };
     });
     g.on('safetyNet', () => this.speak('safetyNet', TUTORIAL.lines.safetyNet, { once: false }));
+    // a parcel that turns up while the game is in the background counts as "came while you were away"
+    g.on('postReady', () => { if (document.hidden) this.postAwayDue = true; });
+    // (and that line goes away once the parcel is opened)
+    g.on('post', () => {
+      const el = this.postAwayEl;
+      if (el?.isConnected && !el._dying) { el._dying = true; el.classList.add('g-out'); setTimeout(() => el.remove(), 300); }
+    });
     g.on('tutorial', () => this.modeChanged());
     document.addEventListener('pointerdown', (e) => this.onPointer(e), true);
     document.addEventListener('pointerup', (e) => this.pointerUp(e), true);
@@ -639,6 +648,9 @@ export class GuideController {
     this.started = true;
     this.startedAt = nowS();
     const guided = g.tutorialMode() === 'guided';
+    // the session that shows "What's new" (a farm from before the Post) skips "A parcel came while you were away"
+    this.whatsNewSession = g.hasSeen('whatsNew:pending') && !g.hasSeen('tip:whatsNew');
+    this.postAwayDue = g.postStatus().ready;
     if (guided && !g.hasSeen('welcome')) {
       this.showWelcome();
       setTimeout(() => this.openingShot(), 350);
@@ -750,6 +762,7 @@ export class GuideController {
       this.graduation(step);
       this.autoDaily();
       this.tips();
+      this.postAway();
       this.pump();
       const was = this.view?.act?.key;
       this.view = this.decide(step, ui);
@@ -1269,11 +1282,34 @@ export class GuideController {
     const tip = pendingTip(g, this.tipCtx);
     if (!tip) return;
     this.enqueue('tip', () => {
-      if (!g.markSeen(tip.key)) return;
+      if (!markTipSeen(g, tip)) return;
       this.lastTipAt = nowS();
       const onTap = tip.onTap ? () => { try { tip.onTap(this); } catch (e) { console.error('tip tap:', e); } } : null;
       this.layer.toastCard(tip.text, { ms: 7000, onTap });
     });
+  }
+
+  // "📬 A parcel came while you were away, dear!": once per session, for a parcel that was waiting at load (or turned
+  // up in the background) and is still unopened 20 s in. Never in the tour, with hints off or in a What's-new session.
+  postAway() {
+    if (!this.postAwayDue || this.postAwayDone) return;
+    const g = this.game;
+    if (g.tutorialMode() === 'guided' || g.s.settings?.hints === 'off' || this.whatsNewSession) { this.postAwayDue = false; return; }
+    if (nowS() - this.startedAt < POST_AWAY_AFTER) return;
+    if (!g.postStatus().ready) { this.postAwayDue = false; return; }
+    this.postAwayDone = true;
+    this.enqueue('postAway', () => { this.postAwayEl = this.layer.toastCard(TUTORIAL.lines.postAway, { ms: 7000, onTap: () => this.hud.showPost() }); },
+      () => g.postStatus().ready && g.s.settings?.hints !== 'off');
+  }
+
+  // a parcel's Mailbox goes up by the order board once its modal has closed (the gift queue waits for the modal)
+  postGift(type) {
+    const g = this.game;
+    const waits = () => (g.s.gifts || []).includes(type);
+    this.enqueue('postGift', () => {
+      this.ctrl.startPlacement(type, { gift: true, near: mailboxNear(g) });
+      if (g.s.settings?.hints !== 'off') this.layer.coach(TUTORIAL.lines.postMailbox, 5000);
+    }, waits);
   }
 
   // ------------------------------------------------------------ modal queue (§6.10)
@@ -1372,7 +1408,7 @@ export class GuideController {
 
   placed(o, p) {
     const g = this.game;
-    if (p?.gift && graduationPending(g)) g.markSeen('grad:gift');
+    if (p?.gift && p.type === CHAPTERS[0].reward.gift && graduationPending(g)) g.markSeen('grad:gift');
     // the first pen or workshop placed after the tour brings the turn & tilt tip (a good moment to look around it)
     const kind = OBJECTS[o.type]?.kind;
     if (!p?.gift && g.tutorialMode() !== 'guided' && (kind === 'pen' || kind === 'factory')) this.tipCtx.cameraTipDue = true;
@@ -1382,7 +1418,7 @@ export class GuideController {
 
   placementCancelled(p) {
     const g = this.game;
-    if (p?.gift && graduationPending(g)) g.markSeen('grad:gift'); // the gift waits in Shop → Decor
+    if (p?.gift && p.type === CHAPTERS[0].reward.gift && graduationPending(g)) g.markSeen('grad:gift'); // the gift waits in Shop → Decor
     // and Mabel says so, once the screen is free (in the tour that's after the daily gift)
     const waits = () => (g.s.gifts || []).includes(p.type);
     if (p?.gift && waits() && g.s.settings?.hints !== 'off') {

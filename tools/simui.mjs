@@ -5,7 +5,7 @@
 //
 //   const f = new GuideFollower(game, { advance: (sec) => { t += sec * 1000; } });
 //   const report = f.run({ maxSec: 90 * 60, until: (g) => g.s.quest.index >= QUESTS.length });
-import { planStep, nextMode, placementSpot, plantCap, shouldAutoShowDaily, graduationPending, reserves } from '../src/game/guide.js';
+import { planStep, nextMode, placementSpot, plantCap, shouldAutoShowDaily, graduationPending, reserves, mailboxNear } from '../src/game/guide.js';
 import { OBJECTS, ANIMALS, CROPS, QUESTS, CHAPTERS } from '../src/game/config.js';
 
 // §7.2: 4 s per tap, 3 s per new Mabel line, double for first-time UI, 6 s per level-up modal
@@ -17,7 +17,8 @@ export class SimUI {
   constructor(game, opts = {}) {
     this.g = game;
     this.cost = { ...TAP_COSTS, ...(opts.cost || {}) };
-    this.ui = { panel: null, placing: null, tool: 'hand', modal: null, popover: null, interrupt: null };
+    this.ui = { panel: null, placing: null, tool: 'hand', modal: null, popover: null, interrupt: null, postOpened: false };
+    this.postGift = null; // a parcel's decor to put up once its modal closes (the Mailbox)
     this.queue = []; // modals waiting for a free screen: { kind, prio }
     this.usedUi = new Set(); // key families tapped before (first-time UI costs double)
     this.taps = 0;
@@ -76,6 +77,15 @@ export class SimUI {
 
   closePanel() { this.ui.panel = null; }
 
+  // 📬 (the pill, the Today row or the Mailbox): the parcel modal, never queued (the player opens it)
+  openPost() {
+    if (!this.g.postStatus().ready) return;
+    if (this.ui.modal && this.ui.modal !== 'post') this.queue.unshift({ kind: this.ui.modal, prio: 0 });
+    this.ui.panel = null;
+    this.ui.modal = 'post';
+    this.ui.postOpened = false;
+  }
+
   setTool(t) {
     this.ui.tool = t;
     this.ui.popover = null;
@@ -93,7 +103,7 @@ export class SimUI {
     const g = this.g, pl = this.ui.placing;
     if (!pl) return null;
     if (!pl.valid) return null;
-    const grad = pl.gift && graduationPending(g);
+    const grad = pl.gift && pl.type === CHAPTERS[0].reward.gift && graduationPending(g);
     const o = pl.gift ? g.placeGift(pl.type, pl.x, pl.z, pl.rot) : g.placeObject(pl.type, pl.x, pl.z, pl.rot);
     // cheap decor keeps placing while coins last, as in main.js (the ghost stays on the one just built)
     if (o && !pl.gift && OBJECTS[pl.type].kind === 'decor' && g.s.coins >= OBJECTS[pl.type].cost) {
@@ -210,6 +220,7 @@ export class SimUI {
         else if (b === 'today') this.openPanel('today');
         else if (b === 'trophy') this.openPanel('farmhouse', { tab: 'achievements' });
         else if (b === 'settings') this.openPanel('farmhouse', { tab: 'farm' });
+        else if (b === 'post') this.openPost();
         break;
       case 'panel': this.closePanel(); break;
       case 'shop':
@@ -227,7 +238,7 @@ export class SimUI {
         break;
       case 'place':
         if (b === 'ok') this.confirmPlacement();
-        else if (b === 'cancel') { if (u.placing?.gift && graduationPending(g)) g.markSeen('grad:gift'); u.placing = null; }
+        else if (b === 'cancel') { if (u.placing?.gift && u.placing.type === CHAPTERS[0].reward.gift && graduationPending(g)) g.markSeen('grad:gift'); u.placing = null; }
         break;
       case 'seed':
         if (b === 'more') this.setTool('seed');
@@ -247,12 +258,29 @@ export class SimUI {
         else if (b === 'tend') { this.closePanel(); this.tendPen(o, true); }
         break;
       case 'today':
-        if (b === 'gift') g.claimDaily(); else if (b === 'chore') g.claimChore(+c);
+        if (b === 'gift') g.claimDaily(); else if (b === 'chore') g.claimChore(+c); else if (b === 'post') this.openPost();
         break;
       case 'visitor':
         if (b === 'sell' && u.panel?.id === 'visitor' && g.serveVisitor(u.panel.ref)) this.closePanel();
         break;
       case 'modal': {
+        if (b === 'post') {
+          if (!u.postOpened) {
+            // Open! ✨: the parcel is claimed as it opens, then its tiles pop in (~2 s)
+            const r = g.claimPost();
+            u.postOpened = true;
+            sec += 2;
+            this.postGift = r?.gift?.place ? r.gift.type : null;
+          } else {
+            // Lovely!: the modal closes; the Mailbox goes up through the gift queue, by the order board
+            this.closeModal();
+            u.postOpened = false;
+            const gift = this.postGift;
+            this.postGift = null;
+            if (gift && (g.s.gifts || []).includes(gift) && !u.placing) this.startPlacement(gift, { gift: true, near: mailboxNear(g) });
+          }
+          break;
+        }
         const grad = graduationPending(g);
         if (b === 'levelup') sec = this.cost.levelUp;
         if (b === 'daily') { g.claimDaily(); if (grad) g.markSeen('grad:daily'); }
@@ -333,7 +361,8 @@ export class GuideFollower {
     };
     const offs = [g.on('levelup', ({ level }) => { r.levels[level] ??= +min().toFixed(2); }),
       g.on('safetyNet', () => { r.safetyNet++; })];
-    const rewardCount = () => { const st = g.s.stats; return (st.harvest || 0) + (st.collect || 0) + (st.produce || 0) + (st.ordersDone || 0) + (st.visitors || 0) + g.s.quest.index + g.s.level; };
+    // (parcels and keepsakes count as rewards too)
+    const rewardCount = () => { const st = g.s.stats; return (st.harvest || 0) + (st.collect || 0) + (st.produce || 0) + (st.ordersDone || 0) + (st.visitors || 0) + (st.parcels || 0) + (st.keepsakes || 0) + g.s.quest.index + g.s.level; };
     let lastReward = g.now(), rewards = rewardCount();
     let qi = g.s.quest.index;
     let stalledSince = null, lastKey = null, noop = 0;

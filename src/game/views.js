@@ -1,6 +1,6 @@
 // Keeps the 3D scene in sync with the game model.
 import * as THREE from 'three';
-import { MAP_SIZE, OBJECTS, ANIMALS, PROJECTS } from './config.js';
+import { MAP_SIZE, OBJECTS, ANIMALS, PROJECTS, GOLD } from './config.js';
 import { getModel, instantiate, makeObject, MATS } from './assets.js';
 import { tileToWorld } from './world.js';
 
@@ -41,6 +41,31 @@ export function modelHeight(key) {
 }
 
 const defOf = (o) => OBJECTS[o.type] || {};
+
+// Recoloured decorations (def.tint: a colour, or 'gold' = GOLD with its metal look): each material is cloned once
+// per colour; the vertex colours multiply with it. Glowing (lamp glass) and glass parts keep their own look.
+const tintCache = new Map();
+export function tintOf(type) {
+  const t = OBJECTS[type]?.tint;
+  return t === 'gold' ? GOLD : t ? { color: t } : null;
+}
+export function applyTint(obj, tint) {
+  if (!tint) return obj;
+  obj.traverse((m) => {
+    if (!m.isMesh || !m.material || m.material === MATS.glow || m.material === MATS.glass) return;
+    const k = `${m.material.uuid}|${tint.color}|${tint.metalness ?? ''}|${tint.roughness ?? ''}`;
+    let mat = tintCache.get(k);
+    if (!mat) {
+      mat = m.material.clone();
+      mat.color = new THREE.Color(tint.color);
+      if (tint.metalness != null) mat.metalness = tint.metalness;
+      if (tint.roughness != null) mat.roughness = tint.roughness;
+      tintCache.set(k, mat);
+    }
+    m.material = mat;
+  });
+  return obj;
+}
 // debris (weeds, stones, stumps) gets a per-tile model variant and a natural-looking yaw
 const tileHash = (x, z) => (((x * 73856093) ^ (z * 19349663)) >>> 0) % 1000 / 1000;
 
@@ -161,6 +186,8 @@ export class ObjectView {
       return st ? `masterhouse:${st}` : 'farmhouse';
     }
     if (def.kind === 'debris') return `${def.model || o.type}:${Math.floor(tileHash(o.x, o.z) * 3)}`;
+    // the Mailbox's flag is up while a parcel waits
+    if (o.type === 'mailbox') return `mailbox:${this.game.postStatus().ready ? 'up' : 'down'}`;
     if (def.kind !== 'tree') return def.model || o.type;
     return `tree:${def.model}:${this.treeVisual(o)}`;
   }
@@ -178,7 +205,7 @@ export class ObjectView {
 
   add(o, animate) {
     const key = this.modelKey(o);
-    const obj = makeObject(key);
+    const obj = applyTint(makeObject(key), tintOf(o.type));
     obj.userData.objectId = o.id;
     if (defOf(o).flat) obj.traverse((m) => { if (m.isMesh) m.castShadow = false; });
     this.scene.add(obj);
@@ -227,6 +254,8 @@ export class ObjectView {
       this.checkTimer = 0.5;
       for (const e of [...this.map.values()]) {
         if ((defOf(e.o).kind === 'tree' || e.o.type === 'farmhouse') && this.modelKey(e.o) !== e.key) this.add(e.o, true);
+        // the Mailbox's flag goes up / down with a little bounce
+        if (e.o.type === 'mailbox' && this.modelKey(e.o) !== e.key) { this.add(e.o, false); const n = this.map.get(e.o.id); if (n) n.pop = 0.6; }
       }
     }
     for (const e of this.map.values()) {
@@ -649,7 +678,7 @@ export class Ghost {
     this.hide();
     this.type = type;
     this.height = modelHeight(modelKey);
-    this.obj = makeObject(modelKey, { shadow: false });
+    this.obj = applyTint(makeObject(modelKey, { shadow: false }), tintOf(type));
     this.obj.traverse((m) => {
       if (m.isMesh) {
         m.material = m.material.clone();

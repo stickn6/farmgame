@@ -19,7 +19,7 @@ export const GUIDE_KEY_PATTERNS = [
   // top bar
   /^level:box$/,
   /^pill:(coins|gems)$/,
-  /^btn:(today|trophy|settings|camera)$/,
+  /^btn:(today|trophy|settings|post|camera)$/,
   // the 🧭 view pad
   /^cam:(up|down|left|right|home)$/,
   // toolbar
@@ -52,13 +52,13 @@ export const GUIDE_KEY_PATTERNS = [
   // one item: its card (selects it) and that item's "Sell 1" button
   new RegExp(`^storage:(item|sell):(${items})$`),
   // today
-  /^today:(gift|chore:\d+)$/,
+  /^today:(gift|post|chore:\d+)$/,
   // farmhouse panel tabs
   /^farmhouse:tab:(progress|village|achievements|farm)$/,
   // visitor
   /^visitor:sell$/,
   // modals
-  /^modal:(levelup:ok|daily:claim|chest:open)$/,
+  /^modal:(levelup:ok|daily:claim|chest:open|post:open)$/,
   // speech bubbles: a<animalId>, o<objectId>, v<visitorId>, plus the wagon and village projects
   /^bubble:[aov]\d+$/,
   new RegExp(`^bubble:(wagon|p(${projects}))$`),

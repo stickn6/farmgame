@@ -86,8 +86,9 @@ export class Bot {
       if (st === 'ready' && this.act()) g.harvestTree(o);
       else if (st === 'dead' && this.act(2)) g.removeObject(o.id);
     }
-    // daily gift + achievements
+    // daily gift, the Post (no tap budget, like the daily) + achievements; bots never place gifts
     if (g.dailyStatus().canClaim) g.claimDaily();
+    if (g.postStatus().ready) g.claimPost();
     for (const a of ACHIEVEMENTS) while (g.achievementStatus(a).ready) g.claimAchievement(a.id);
     // animals & factories
     // one tap on a pen collects everything ready and feeds everyone we have food for

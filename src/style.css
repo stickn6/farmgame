@@ -661,3 +661,96 @@ button { font-family: inherit; color: inherit; cursor: pointer; border: none; ba
   .cam-pad, .cam-btn.cam-pulse { animation: none !important; }
   .cam-btn { transition: none !important; }
 }
+
+/* ================================================================ v4: the Post (pill, popover, parcel modal) */
+/* row 3: [📪 4:12 ▬▬][🧭] — a small cream pill with a 3 px countdown bar; green "📬 Open!" while a parcel waits */
+.post-pill {
+  position: relative; display: flex; align-items: center; justify-content: center; gap: 4px; height: 30px; min-width: 76px; padding: 0 10px 0 6px;
+  border-radius: 15px; background: var(--cream); border: 2px solid #fff; color: var(--ink); font-weight: 700; font-size: 14px; line-height: 1;
+  font-variant-numeric: tabular-nums; white-space: nowrap; box-shadow: 0 3px 0 rgba(0,0,0,.2);
+}
+.post-pill::after { content: ''; position: absolute; inset: -7px -3px; } /* a 44 px tall hit area */
+.post-pill .pp-ico { font-size: 17px; }
+.post-pill .pp-track { position: absolute; left: 8px; right: 8px; bottom: 2px; height: 3px; border-radius: 2px; background: rgba(123, 81, 48, .18); overflow: hidden; pointer-events: none; }
+.post-pill .pp-bar { display: block; height: 100%; width: 0; background: var(--gold); border-radius: 2px; transition: width .8s; }
+.post-pill.ready { background: linear-gradient(#8ee36a, var(--green)); color: #fff; text-shadow: 0 1px 1px rgba(0,0,0,.25); animation: ppBump 6s ease-in-out infinite; }
+.post-pill.ready .pp-track { display: none; }
+@keyframes ppBump { 0%, 88%, 100% { transform: scale(1); } 92% { transform: scale(1.14) rotate(-4deg); } 96% { transform: scale(1.06) rotate(3deg); } }
+@media (min-width: 521px) { .post-pill { height: 34px; border-radius: 17px; font-size: 15px; } }
+@media (max-width: 360px) {
+  .post-pill { min-width: 0; padding: 0 7px 0 5px; }
+  .post-pill.ready { padding: 0 6px; background: var(--cream); color: var(--ink); text-shadow: none; box-shadow: 0 0 0 2.5px var(--green), 0 3px 0 rgba(0,0,0,.2); }
+  .post-pill.ready .pp-text { display: none; }
+}
+
+/* small popover under row 3 (the post's countdown and teaser) */
+.mini-pop {
+  position: absolute; z-index: 30; width: min(240px, calc(100vw - 16px)); display: flex; flex-direction: column; gap: 5px; padding: 10px 12px;
+  background: rgba(255, 248, 231, .97); border: 2px solid #fff; border-radius: 14px; font-size: 13px; line-height: 1.3;
+  box-shadow: 0 4px 0 rgba(0,0,0,.18), 0 8px 24px rgba(0,0,0,.18); transform-origin: top right; animation: camPadIn .16s ease-out both;
+}
+.post-pop .pp-head { font-size: 14px; }
+.post-pop .btn { align-self: flex-end; }
+.post-strip { font-size: 11px; font-weight: 600; color: var(--muted); line-height: 1.5; }
+.post-strip .done { color: var(--green-dark); }
+.post-strip .next { color: var(--wood-dark); font-weight: 700; }
+.post-strip i { font-style: normal; color: #cdb98f; }
+.post-strip > span { white-space: nowrap; }
+
+/* the parcel modal (the shell of the daily gift) */
+.post-modal { padding-top: 16px; }
+.post-wrap {
+  position: relative; width: 96px; height: 96px; margin: -66px auto 2px; flex-shrink: 0; display: flex; align-items: center; justify-content: center;
+  border-radius: 50%; background: radial-gradient(circle, rgba(255, 246, 201, .95) 0 45%, rgba(255, 233, 168, 0) 70%); animation: pwWiggle 2s ease-in-out infinite;
+}
+.post-wrap .pw-ico { font-size: 72px; line-height: 1; filter: drop-shadow(0 6px 0 rgba(0,0,0,.15)); }
+.post-wrap.postcard .pw-ico { font-size: 64px; }
+.post-wrap.big { background: radial-gradient(circle, rgba(255, 243, 168, .95) 0 40%, rgba(255, 213, 74, .55) 55%, rgba(255, 213, 74, 0) 72%); }
+.post-wrap .pw-bow { position: absolute; top: 4px; right: 4px; font-size: 32px; filter: drop-shadow(0 2px 0 rgba(0,0,0,.15)); }
+.post-wrap.shake { animation: pwShake .2s ease-in-out 3; }
+.post-wrap.popped { animation: pwPop .4s ease-out both; }
+@keyframes pwWiggle { 0%, 66%, 100% { transform: rotate(0); } 74% { transform: rotate(-8deg) scale(1.05); } 82% { transform: rotate(7deg) scale(1.05); } 90% { transform: rotate(-3deg); } }
+@keyframes pwShake { 25% { transform: translateX(-7px) rotate(-7deg); } 75% { transform: translateX(7px) rotate(7deg); } }
+@keyframes pwPop { 40% { transform: scale(1.3); } 100% { transform: scale(.82); opacity: .35; } }
+.post-title { font-size: 22px; font-weight: 700; line-height: 1.15; color: var(--wood-dark); margin-top: 2px; }
+.post-note { font-style: italic; font-size: 14px; line-height: 1.3; margin: 6px 6px 0; }
+.post-tiles { margin-top: 12px; }
+.post-tiles:empty, .post-foot:empty { display: none; }
+.post-tile { position: relative; min-width: 86px; max-width: 124px; animation: ptIn .45s cubic-bezier(.2,.9,.3,1.5) both; }
+.post-tile small { text-align: center; line-height: 1.15; }
+.post-tile small.muted { font-size: 10px; }
+@keyframes ptIn { from { transform: scale(.3); opacity: 0; } }
+.post-tile .pt-flip { position: relative; display: block; width: 40px; height: 36px; perspective: 200px; }
+.post-tile .pt-flip b { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 28px; backface-visibility: hidden; }
+.post-tile .pt-q { background: #e9dcc0; border-radius: 10px; color: var(--muted); font-size: 22px !important; animation: ptFlipQ .5s .7s both; }
+.post-tile .pt-k { transform: rotateY(180deg); animation: ptFlipK .5s .7s both; }
+@keyframes ptFlipQ { to { transform: rotateY(-180deg); } }
+@keyframes ptFlipK { to { transform: rotateY(0); } }
+.post-tile.keepsake::after { content: '✨'; position: absolute; top: -8px; right: -6px; font-size: 20px; opacity: 0; animation: ptSpark 1.3s 1s both; pointer-events: none; }
+@keyframes ptSpark { 30% { opacity: 1; transform: scale(1.35) rotate(18deg); } 100% { opacity: 0; transform: scale(.8); } }
+.post-foot { margin-top: 10px; display: flex; flex-direction: column; gap: 2px; }
+.post-modal > .muted.small:last-child { margin-top: 8px; }
+.post-row { flex-direction: row; align-items: center; justify-content: space-between; font-weight: 600; font-size: 14px; }
+.post-row.ready { background: #f1ffe8; box-shadow: 0 3px 0 #b7e59f; }
+@media (max-height: 520px) {
+  .post-wrap { width: 64px; height: 64px; margin-top: -14px; }
+  .post-wrap .pw-ico { font-size: 48px; }
+  .post-wrap .pw-bow { font-size: 22px; }
+  .post-title { font-size: 18px; }
+  .post-tiles { margin-top: 6px; }
+  .post-tile { min-width: 76px; padding: 4px 8px; }
+  .post-tile span { font-size: 22px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .post-pill.ready, .post-wrap, .post-wrap.shake, .post-wrap.popped, .mini-pop, .pt-q, .pt-k, .post-tile.keepsake::after { animation: none !important; }
+  .post-tile { animation: ptFade .3s both !important; }
+  .post-tile .pt-q { display: none; }
+  .post-tile .pt-k { transform: none; }
+  .post-pill .pp-bar { transition: none; }
+}
+@keyframes ptFade { from { opacity: 0; } }
+/* narrow phones with big numbers: a long "Next: …" hint ellipsizes so the right column (🪙💎, 🎁🏆⚙️, 📪🧭) stays on screen */
+.top-left { min-width: 0; flex: 0 1 auto; }
+.level-box { max-width: 100%; min-width: 0; }
+.xp-col { min-width: 0; }
+.next-hint { max-width: min(190px, 100%); }

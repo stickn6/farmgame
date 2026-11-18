@@ -5,7 +5,7 @@ import {
   CHORES, WAGON, PROJECTS, PROJECT_REWARD, MAX_CROP_SPEEDUP, xpToNext,
   ITEMS, CROPS, ANIMALS, RECIPES, OBJECTS, QUESTS, REPEAT_QUESTS, ORDERS, START,
   xpForLevel, producibleItems, levelUpReward,
-  CHAPTERS, QUEST_MIGRATION_V3, V2_QUEST_COUNT, GUIDE, TUTORIAL, FEATURE_TIPS, tutorialTile,
+  CHAPTERS, QUEST_MIGRATION_V3, V2_QUEST_COUNT, GUIDE, TUTORIAL, FEATURE_TIPS, tutorialTile, POST, ALBUM, KEEPSAKES,
 } from './config.js';
 import * as layout from './layout.js';
 
@@ -19,9 +19,46 @@ const V1 = {
   animals: { chicken: 2, cow: 4, sheep: 6 },
   recipes: { bread: 3, cookie: 3, pie: 3, butter: 5, cheese: 5, sweater: 7 },
 };
-const SAVE_VERSION = 3;
+const SAVE_VERSION = 4;
 const MODES = ['guided', 'coached', 'independent']; // the tutorial only ever moves forward
 const DAY_MS = 86400000;
+const MIN_MS = 60000;
+const HOUR_MS = 3600000;
+// dev builds, tests and the sim: a reward that would pay building materials (or XP) throws; a production build skips it
+const STRICT = typeof window === 'undefined' || !!import.meta.env?.DEV;
+// the Post: ms from opening parcel n−1 (or the farm's start) until parcel n is ready
+export const postGap = (n) => (POST.gaps[n] ?? POST.every) * 1000;
+// Game.now() for a save that isn't loaded yet: a clock set back more than 5 min is pinned to when the save was last seen
+const nowFor = (s, t) => (s && s.lastSeen && t < s.lastSeen - 300000 ? s.lastSeen : t);
+// the save's own RNG (mulberry32 state, uint32), seeded from when the farm was made
+const seedRng = (createdAt) => ((createdAt ^ 0x9e3779b9) >>> 0) || 1;
+
+// A pantry parcel's good (pure): of the recipes unlocked at least a level ago that cost at most half of V, the
+// priciest (ties: the earlier recipe); as many as fit in V (≤ pantryMaxQty). → { id, price, qty } | null
+export function pantryPick(L, V) {
+  let best = null;
+  for (const [id, r] of Object.entries(RECIPES)) {
+    if (Math.max(r.level || 0, OBJECTS[r.building].level) > L - 1) continue;
+    const price = ITEMS[id].price;
+    if (price > V / 2 || (best && price <= best.price)) continue;
+    best = { id, price };
+  }
+  return best ? { ...best, qty: Math.min(POST.pantryMaxQty, Math.floor(V / best.price)) } : null;
+}
+
+// "Rosa's pantry parcel", "a postcard from Theo", "Big parcel": what the HUD says is coming (kind and sender only)
+export function postTeaser(c) {
+  const npc = VISITORS.npcs.find((x) => x.id === c.sender);
+  const who = POST.short[c.sender] || npc?.name || 'Grandma Mabel';
+  const face = npc?.icon || '👵';
+  const k = POST.kinds[c.kind] || POST.kinds.welcome;
+  const label = c.kind === 'big' ? `${k.icon} ${k.label}`
+    : c.kind === 'office' ? `${k.icon} ${k.label}`
+      : c.kind === 'postcard' ? `${face} a postcard from ${who}`
+        : c.kind === 'welcome' ? `${face} a parcel from ${who}`
+          : `${face} ${who}'s ${k.label.toLowerCase()}`;
+  return { kind: c.kind, sender: c.sender, icon: c.kind === 'big' || c.kind === 'office' ? k.icon : face, label };
+}
 
 export class Emitter {
   constructor() { this.handlers = {}; }
@@ -44,8 +81,11 @@ const dayNumber = (ms) => { const d = new Date(ms); return Math.floor((ms - d.ge
 export class Game extends Emitter {
   // opts.clock: () => ms timestamp (lets the simulator run at accelerated time)
   // opts.storage: localStorage-like object, or null to disable persistence
+  // opts.features: { post, album, charm } (all on by default; the sim's --features off A/B turns them off)
   constructor(opts = {}) {
     super();
+    this.features = { post: true, album: true, charm: true, ...(opts.features || {}) };
+    this.granted = {}; // source → what grant() paid out this session (not saved): the sim and tests read it
     this.clock = opts.clock || (() => Date.now());
     this.storage = opts.storage !== undefined ? opts.storage : (typeof localStorage !== 'undefined' ? localStorage : null);
     this.s = this.load() || this.newGame();
@@ -101,6 +141,14 @@ export class Game extends Emitter {
       // seen: one-time lines/tips/interrupts; net: when the safety net last paid out
       tutorial: { v: 1, mode: 'independent', startedAt: 0, seen: {}, reveal: 'all', freeFinishUsed: true, firstVisitorDone: true, net: 0, t: {} },
       gifts: [], // chapter-chest decor waiting to be placed (object types)
+      // the Post: n parcels opened · nextAt: when the waiting parcel is/was ready · office: the one-off migration parcel
+      // waits · notified: its postReady went out
+      post: { n: 0, nextAt: now + postGap(0), lastAt: 0, office: false, notified: false },
+      // Mabel's Keepsake Album: have: keepsake id → ms found · claimed: page id → ms · meter/primed: the find pity meter ·
+      // fresh: found since last viewed · launch / all: the launch-album and all-pages prizes are paid
+      album: { open: false, have: {}, claimed: {}, meter: 0, primed: false, fresh: [], launch: false, all: false },
+      charm: { ranks: 0, vouchers: 0, titles: [] }, // Prettiest Farm (charm itself is derived from placed decor)
+      rng: seedRng(now), // see rand()
       createdAt: now,
     };
   }
@@ -138,6 +186,7 @@ export class Game extends Emitter {
     // a new farm gets the guided tour and its once-per-save assists
     s.tutorial = { ...s.tutorial, mode: 'guided', startedAt: now, reveal: [], freeFinishUsed: false, firstVisitorDone: false };
     s.settings.hints = 'full';
+    s.post.nextAt = s.createdAt + postGap(0); // parcel #1, 5 minutes in
     return s;
   }
 
@@ -151,7 +200,7 @@ export class Game extends Emitter {
       if (s.version < SAVE_VERSION) {
         try { this.storage.setItem(BACKUP_KEY, raw); } catch (e) { /* best effort */ }
       }
-      return this.migrate(s);
+      return this.clampPost(this.migrate(s));
     } catch (e) {
       console.warn('Failed to load save', e);
       return null;
@@ -167,6 +216,7 @@ export class Game extends Emitter {
     s.stats = { ...blank.stats, ...s.stats };
     s.settings = { ...blank.settings, ...s.settings };
     s.tutorial = { ...blank.tutorial, ...s.tutorial };
+    for (const k of ['post', 'album', 'charm']) s[k] = { ...blank[k], ...s[k] };
     if (s.version < 2) {
       // v1 had no storage building: give one, next to the farmhouse if possible
       this.s = s;
@@ -238,7 +288,35 @@ export class Game extends Emitter {
       for (const lvl of Object.keys(FEATURE_TIPS)) if (+lvl <= s.level) t.seen['tip:' + lvl] = true;
       s.version = 3;
     }
+    if (s.version < 4) {
+      // the Post: a young farm (a tour farm under 4 h old, L ≤ 6) gets the whole welcome; every other farm one
+      // "Post office opening" parcel, waiting now (it doesn't advance n), then the 8-hour cycle
+      const now = nowFor(s, this.clock());
+      const created = s.createdAt || now;
+      const t = s.tutorial;
+      const young = s.level <= 6 && (t.startedAt || 0) > 0 && now - created < 4 * HOUR_MS;
+      s.post = young
+        ? { n: 0, nextAt: Math.max(now + MIN_MS, created + postGap(0)), lastAt: 0, office: false, notified: false }
+        : { n: POST.welcome.length, nextAt: now, lastAt: 0, office: true, notified: false };
+      s.rng = seedRng(created);
+      // one "What's new" card (tip:whatsNew) for the farms that skip the welcome parcels
+      if (!young) t.seen = { ...t.seen, 'whatsNew:pending': true };
+      // the album pages / gilding tips of levels already reached never show
+      for (const lvl of [31, 35, 37, 39]) if (s.level >= lvl) t.seen['tip:' + lvl] = true;
+      s.version = 4;
+    }
     this.healQuest(s);
+    return s;
+  }
+
+  // Every load: a save written with the clock far ahead never locks the post out for days.
+  clampPost(s) {
+    const p = s?.post;
+    if (!p || s.version > SAVE_VERSION) return s;
+    const now = nowFor(s, this.clock());
+    p.n = Math.max(0, Math.floor(p.n) || 0);
+    if (!Number.isFinite(p.nextAt)) p.nextAt = now + postGap(p.n);
+    p.nextAt = Math.min(p.nextAt, now + postGap(p.n) + 5 * MIN_MS);
     return s;
   }
 
@@ -1488,6 +1566,189 @@ export class Game extends Emitter {
     this.emit('daily', st);
     this.saveSoon();
     return st;
+  }
+
+  // ------------------------------------------------------------ v4 rewards: the save's own RNG and grant()
+  // mulberry32 on s.rng (saved, so a reload continues the sequence). The only RNG of the v4 features: Math.random
+  // (orders, visitors, material drops) is never touched by them, so the pacing sim sees the same farm.
+  rand() {
+    const s = this.s;
+    const a = ((s.rng >>> 0) + 0x6d2b79f5) >>> 0;
+    s.rng = a;
+    let t = Math.imul(a ^ (a >>> 15), a | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  }
+
+  // The single choke point of every v4 reward (the Post, the album, ribbons).
+  // r: { coins, gems, items: { id: n }, keepsake: true | id, keepsakeFallback: gems, gift: type, place, voucher: n }
+  // Coins are paid as non-earned (no "Earn coins" goals, no Tycoon); items that don't fit become coins at shop price;
+  // decor goes to s.gifts; keepsakes to the album (none to give → keepsakeFallback gems). There is no XP path, and
+  // building materials are never paid (they throw in dev / tests). Tallied in this.granted[source].
+  // Returns the reward tiles for the UI: [{ kind: 'coins'|'gems'|'item'|'keepsake'|'gift'|'voucher', n, item, id, type, place }]
+  grant(source, r = {}) {
+    const t = (this.granted[source] ||= { coins: 0, gems: 0, items: {}, itemValue: 0, keepsakes: 0, gifts: 0, vouchers: 0, xp: 0, materials: 0 });
+    if (r.xp || r.materials) {
+      if (STRICT) throw new Error(`grant(${source}): XP and building materials are never a reward`);
+      console.warn(`grant(${source}): XP / materials skipped`);
+    }
+    const tiles = [];
+    let coins = Math.max(0, Math.round(r.coins || 0)), gems = Math.max(0, Math.round(r.gems || 0)), fromItems = 0;
+    const items = [];
+    for (const [i, n] of Object.entries(r.items || {})) {
+      if (!(n > 0) || !ITEMS[i]) continue;
+      if (ITEMS[i].cat === 'material') {
+        if (STRICT) throw new Error(`grant(${source}): building materials are never a reward (${i})`);
+        console.warn(`grant(${source}): ${i} skipped (materials are never a reward)`);
+        continue;
+      }
+      if (this.roomFor(i, n, true)) {
+        this.addItem(i, n);
+        t.items[i] = (t.items[i] || 0) + n;
+        t.itemValue += n * ITEMS[i].price;
+        items.push({ kind: 'item', item: i, n });
+      } else fromItems += n * ITEMS[i].price; // no room: the same value in coins
+    }
+    coins += fromItems;
+    let keepsake = null;
+    if (r.keepsake) {
+      keepsake = this.giveKeepsake(source, r.keepsake === true ? null : r.keepsake);
+      if (keepsake) t.keepsakes++;
+      else gems += Math.max(0, r.keepsakeFallback || 0);
+    }
+    if (coins) { this.addCoins(coins, false); t.coins += coins; tiles.push({ kind: 'coins', n: coins, fromItems }); }
+    if (gems) { this.addGems(gems); t.gems += gems; tiles.push({ kind: 'gems', n: gems }); }
+    tiles.push(...items);
+    if (keepsake) tiles.push({ kind: 'keepsake', id: keepsake });
+    if (r.gift && OBJECTS[r.gift]) {
+      (this.s.gifts ||= []).push(r.gift);
+      t.gifts++;
+      this.emit('gifts', this.s.gifts);
+      tiles.push({ kind: 'gift', type: r.gift, place: !!r.place });
+    }
+    if (r.voucher > 0) {
+      if (this.features.charm) { this.s.charm.vouchers += r.voucher; t.vouchers += r.voucher; tiles.push({ kind: 'voucher', n: r.voucher }); }
+      else { const v = r.voucher * ALBUM.voucherFallbackGems; this.addGems(v); t.gems += v; tiles.push({ kind: 'gems', n: v }); }
+    }
+    this.saveSoon();
+    return tiles;
+  }
+
+  // ------------------------------------------------------------ the Post (timed gifts)
+  // What parcel n holds when opened at level L (pure: depends only on n, L and the save's office flag; the keepsake
+  // itself is picked at claim time with rand()). → { n, kind, sender, note, wrap, coins, gems, items, keepsake,
+  // keepsakeFallback, gift, place }. kind: welcome | keepsake | pantry | postcard | big | office.
+  postContents(n = this.s.post.n, L = this.s.level, s = this.s) {
+    let base, kind;
+    if (s.post?.office) { base = POST.office; kind = 'office'; }
+    else if (n < POST.welcome.length) { base = POST.welcome[n]; kind = base.big ? 'big' : 'welcome'; }
+    else { kind = POST.cycle[(n - POST.welcome.length) % POST.cycle.length]; base = POST.slots[kind]; }
+    const sender = typeof base.from === 'function' ? base.from(L, n) : base.from;
+    const round = Math.max(0, Math.floor((n - POST.welcome.length) / POST.cycle.length));
+    const P = POST.coins(L);
+    const c = {
+      n, kind, sender, note: base.note || POST.notes[sender][round % 3], wrap: kind === 'postcard' ? 'postcard' : base.big ? 'big' : 'plain',
+      coins: base.coins ? P : 0, gems: base.gems || 0, items: {}, keepsake: base.keepsake || null,
+      keepsakeFallback: base.keepsake ? POST.keepsakeFallbackGems : 0, gift: base.gift || null, place: !!base.place,
+    };
+    // Pantry: goods worth exactly P(L) — the best good unlocked a level ago at ≤ half of it, the rest in coins
+    if (base.pantry) {
+      const best = pantryPick(L, P);
+      if (best) { c.items = { [best.id]: best.qty }; c.coins = P - best.qty * best.price; } else c.coins = P;
+    }
+    // every 3rd recurring Big parcel (n = 16, 28) brings a golden decoration; after both, 💎3 instead
+    if (kind === 'big' && !s.post?.office && n >= POST.welcome.length) {
+      const b = (n - POST.welcome.length - POST.cycle.indexOf('big')) / POST.cycle.length + 1; // 1st, 2nd … Big
+      if (b % POST.goldEvery === 0) {
+        const gold = POST.golds[b / POST.goldEvery - 1];
+        if (gold && OBJECTS[gold]) { c.gift = gold; c.place = false; } else c.gems += POST.goldFallbackGems;
+      }
+    }
+    return c;
+  }
+
+  // { ready, n, nextAt, msLeft (≤ gap), gap, progress, intro, office, kind, sender, teaser: { kind, sender, icon, label } }
+  postStatus() {
+    const p = this.s.post;
+    const now = this.now();
+    const gap = postGap(p.n);
+    const ready = this.features.post !== false && (!!p.office || now >= p.nextAt);
+    const msLeft = ready ? 0 : Math.max(0, Math.min(gap, p.nextAt - now));
+    const c = this.postContents(p.n, this.s.level);
+    return {
+      ready, n: p.n, nextAt: p.nextAt, msLeft, gap, progress: 1 - msLeft / gap, intro: p.n < POST.welcome.length && !p.office,
+      office: !!p.office, kind: c.kind, sender: c.sender, teaser: postTeaser(c),
+    };
+  }
+
+  // the HUD's 1 Hz tick: 'postReady' once per parcel
+  postTick() {
+    const st = this.postStatus();
+    if (st.ready && !this.s.post.notified) {
+      this.s.post.notified = true;
+      this.emit('postReady', st);
+      this.saveSoon();
+    }
+    return st;
+  }
+
+  // Open the waiting parcel: contents → grant('post') → n + 1 (the office parcel doesn't count) → the next countdown.
+  // → null | { n, office, kind, sender, note, wrap, tiles, gift: { type, place } | null, next: { at, kind, sender, label } }
+  claimPost() {
+    if (!this.postStatus().ready) return null;
+    const p = this.s.post;
+    const office = !!p.office;
+    const c = this.postContents(p.n, this.s.level);
+    const tiles = this.grant('post', c);
+    if (office) p.office = false; else p.n++;
+    const now = this.now();
+    p.lastAt = now;
+    p.nextAt = now + postGap(p.n);
+    p.notified = false;
+    this.bumpStat('parcels');
+    const next = this.postContents(p.n, this.s.level);
+    const r = {
+      n: c.n, office, kind: c.kind, sender: c.sender, note: c.note, wrap: c.wrap, tiles,
+      gift: c.gift ? { type: c.gift, place: c.place } : null,
+      next: { at: p.nextAt, kind: next.kind, sender: next.sender, label: postTeaser(next).label },
+    };
+    if (c.kind === 'pantry' && tiles.some((x) => x.fromItems)) {
+      this.emit('toast', { text: `Your Barn was full, so ${POST.short[c.sender] || 'Mabel'} sent coins instead.`, type: 'info' });
+    }
+    this.emit('post', r);
+    this.saveSoon();
+    return r;
+  }
+
+  // ------------------------------------------------------------ the album (what the Post needs of it)
+  albumOpen() { return !!this.s.album?.open; }
+
+  // A keepsake from a parcel (or a fixed one, e.g. Kip's clover). Never a duplicate: a fixed id you already have, or
+  // none given, picks a missing one on the earliest open page that still has gaps (rand()). Opens the album.
+  // → the keepsake id, or null when there is nothing to find (the caller pays fallback gems)
+  giveKeepsake(src, id = null) {
+    if (!this.features.album) return null;
+    const a = this.s.album;
+    let pick = id && KEEPSAKES[id] && !a.have[id] ? id : null;
+    if (!pick) {
+      for (const p of ALBUM.pages) {
+        if (this.s.level < p.level) continue;
+        const missing = p.items.map(([it]) => `${p.id}:${it}`).filter((k) => !a.have[k]);
+        if (missing.length) { pick = missing[Math.floor(this.rand() * missing.length)]; break; }
+      }
+    }
+    if (!pick) return null;
+    a.have[pick] = this.now();
+    a.open = true;
+    a.fresh.push(pick);
+    this.bumpStat('keepsakes');
+    const k = KEEPSAKES[pick];
+    const page = ALBUM.pages.find((p) => p.id === k.page);
+    const pageFound = page.items.filter(([it]) => a.have[`${page.id}:${it}`]).length;
+    this.emit('keepsake', { id: pick, page: page.id, source: src, pageFound, pageDone: pageFound >= page.items.length });
+    this.emit('album', a);
+    this.saveSoon();
+    return pick;
   }
 
   // ------------------------------------------------------------ achievements

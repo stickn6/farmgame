@@ -189,6 +189,12 @@ export const OBJECTS = {
   statue: { name: 'Golden Rooster', icon: '🐓', kind: 'decor', size: [1, 1], cost: 20000, level: 20 },
   balloon: { name: 'Hot Air Balloon', icon: '🎈', kind: 'decor', size: [2, 2], cost: 40000, level: 24 },
 
+  // one-of-a-kind decorations (level 99: never sold, never in the Shop list): free gifts that refund nothing.
+  // model: whose 3D model they reuse; tint: a recolour of it ('gold' = GOLD); charm: for Prettiest Farm
+  mailbox: { name: 'Mailbox', icon: '📮', kind: 'decor', size: [1, 1], cost: 0, level: 99, charm: 40, desc: 'The flag goes up when a parcel waits.' },
+  goldscarecrow: { name: 'Golden Scarecrow', icon: '🧑‍🌾', kind: 'decor', model: 'scarecrow', tint: 'gold', size: [1, 1], cost: 0, level: 99, charm: 75 },
+  goldlamp: { name: 'Golden Lamp Post', icon: '🏮', kind: 'decor', model: 'lamp', tint: 'gold', size: [1, 1], cost: 0, level: 99, charm: 75 },
+
   // starter debris on a new farm ("gone a bit wild"): never sold or unlocked (level 99), cleared
   // by tapping for a tiny one-off reward. Finite: 12 pieces, 🪙20 ⭐14 in total, no materials.
   weed: { name: 'Weeds', icon: '🌿', kind: 'debris', size: [1, 1], cost: 0, level: 99, clear: { coins: 1, xp: 1 } },
@@ -682,13 +688,18 @@ export const TUTORIAL = {
     busyIdle: 'Nothing\'s growing or cooking just now — check back a little later, dear.',
     sellFew: 'Short on coins, dear? Sell a spare or two from storage 📦 — tap it, then Sell.',
     giftWaits: 'No rush, dear — your {gift} waits in Shop → Decor 🎁',
+    // the Post (parcel #1 comes during Chapter 1's egg wait)
+    post1: 'The post\'s here! 📬 I sent you a little parcel, dear — tap it to open.',
+    post1Open: 'Open it up! The next one comes in 10 minutes — it waits if you\'re busy.',
+    postMailbox: '📮 Your very own Mailbox! Tap ✓ to put it up by the road.',
+    postAway: '📬 A parcel came while you were away, dear!',
   },
 };
 // the Chapter 1 tour lines: shown once each; Skip and old saves mark them all as seen
 TUTORIAL.ch1Lines = ['welcome', 'harvest', 'claim', 'plant', 'claimL2', 'levelup2', 'levelup3', 'levelup4', 'order1', 'order1Panel',
   'coop', 'coopShop', 'coopPlace', 'place', 'cameraTip', 'chickens', 'chickensPanel', 'chickensMore', 'feed', 'plow', 'plowTiles', 'plowTip', 'carrots',
   'eggs', 'eggsMeanwhile', 'eggsCollected', 'bakery', 'bakeryCoins', 'bread', 'breadWheat', 'breadFree', 'breadCollect',
-  'grad', 'gradGift', 'gradDaily', 'gradEnd', 'skipConfirm'];
+  'grad', 'gradGift', 'gradDaily', 'gradEnd', 'skipConfirm', 'post1', 'post1Open'];
 
 // absolute tile of a tutorial offset ([dx, dz] from TUTORIAL.startLo)
 export const tutorialTile = ([dx, dz]) => [TUTORIAL.startLo + dx, TUTORIAL.startLo + dz];
@@ -738,6 +749,93 @@ export const CAMERA = {
   orbit: { yawPerPx: 0.010, pitchPerPx: 0.005, pitchPerWheel: 0.0015 },
   zoomTilt: { enabled: false, per: 0.004, lo: -0.05, hi: 0.08 }, // optional polish, shipped OFF
 };
+
+// the gold recolour of the exclusive golden decorations (and, later, gilding)
+export const GOLD = { color: '#ffd54a', metalness: 0.35, roughness: 0.45 };
+
+// ---------------------------------------------------------------- the Post (timed gifts)
+// Parcel n (n = parcels opened so far) is ready at s.post.nextAt: 5 min after the farm starts, then each next one is
+// on its way the moment you open the last — gapFor(n) = gaps[n] ?? every (10 min, 15 min, 30 min, 3 h, then 8 h).
+// It runs in real time, at most one waits (no stacking, no expiry). Contents depend only on n, the level when opened
+// and the save's own RNG: gems, keepsakes, pantry goods, the Mailbox and a little coin (P(L)), first coins at 4 h.
+// Never XP and never building materials: every parcel pays out through Game.grant().
+export const POST = {
+  gaps: [min(5), min(10), min(15), min(30), hr(3)], every: hr(8), // seconds, like the rest of config
+  coins: (L) => round5(5 * Math.pow(L, 1.5)), // P(L), at the level when the parcel is opened
+  // #1–#5 on a new farm: no coins, crops or goods before 4 h
+  welcome: [
+    { from: 'mabel', gems: 2, note: 'Welcome home, dear! The post comes to the farm now — here\'s a little something.' },
+    { from: 'rosa', gems: 2, note: 'Hello, neighbour! I can\'t wait to taste your bread. See you soon! — Rosa' },
+    { from: 'kip', gems: 2, keepsake: 'meadow:clover', note: 'I found a four-leaf clover by your fence! Grandma Mabel says it goes in her album!' },
+    { from: 'hank', gems: 3, gift: 'mailbox', place: true, note: 'The village voted you a proper mailbox! Put it up by the road. — Mayor Hank' },
+    { from: 'mabel', gems: 5, coins: true, keepsake: true, big: true, note: 'Something from my attic — and a little pocket money. More comes every 8 hours!' },
+  ],
+  // the one-off parcel of a farm from before the Post (see Game.migrate); it does not advance n
+  office: { from: 'hank', gems: 5, coins: true, keepsake: 'meadow:clover', gift: 'mailbox', place: true, big: true, note: 'The village post office is open! Here\'s your own mailbox — a parcel every 8 hours.' },
+  // #6 onwards: slot k = (n − 5) mod 4
+  cycle: ['keepsake', 'pantry', 'postcard', 'big'],
+  slots: {
+    keepsake: { gems: 1, keepsake: true, from: (L, n) => (L >= 21 && ((n - 5) >> 2) % 2 ? 'juno' : L >= 7 ? 'kip' : 'mabel') },
+    pantry: { pantry: true, from: (L) => (L >= 7 ? 'rosa' : 'mabel') },
+    postcard: { gems: 2, from: (L, n) => (L >= 16 && ((n - 5) >> 2) % 2 ? 'hank' : L >= 11 ? 'theo' : 'mabel') },
+    big: { gems: 4, coins: true, keepsake: true, big: true, from: () => 'mabel' },
+  },
+  golds: ['goldscarecrow', 'goldlamp'], goldEvery: 3, goldFallbackGems: 3, // every 3rd Big parcel: n = 16, 28; then 💎3
+  keepsakeFallbackGems: 2, pantryMaxQty: 6,
+  // names in teasers and notes (the full name and icon come from VISITORS.npcs)
+  short: { mabel: 'Grandma Mabel', rosa: 'Rosa', kip: 'Kip', theo: 'Theo', hank: 'Mayor Hank', juno: 'Juno' },
+  kinds: {
+    welcome: { icon: '📦', label: 'Parcel' }, keepsake: { icon: '🔖', label: 'Keepsake parcel' }, pantry: { icon: '📦', label: 'Pantry parcel' },
+    postcard: { icon: '📨', label: 'Postcard' }, big: { icon: '✨', label: 'Big parcel' }, office: { icon: '📮', label: 'Post office opening' },
+  },
+  // recurring notes: notes[sender][floor((n − 5) / 4) % 3]
+  notes: {
+    mabel: ['Thought of you while knitting. Here\'s a little something.', 'Fresh from my pantry, dear — don\'t let the hens see!', 'Warm wishes from your Grandma Mabel!'],
+    rosa: ['Baked one too many — I know you\'ll find a use!', 'For the hardest-working farmer in the valley!', 'Flour on everything, but love in the box!'],
+    kip: ['Is this treasure?! I think it\'s treasure!', 'Don\'t tell Mum I sent this!', 'It\'s for your album! I checked twice!'],
+    theo: ['Caught nothing today, but found this.', 'Quiet morning on the pond. Thought of you.', 'Mind the wet bits — it was near the river.'],
+    hank: ['On behalf of the whole village: thank you!', 'The council voted. You get a parcel!', 'Official business: one parcel, with thanks.'],
+    juno: ['I painted the wrapping myself. Open gently!', 'Inspired by your sunflowers. Enjoy!', 'Art is better shared. So is this!'],
+  },
+};
+
+// ---------------------------------------------------------------- Mabel's Keepsake Album (data)
+// 12 pages of 6 keepsakes ('<page>:<item>'). The album opens with the first keepsake (Kip's clover in parcel #3, the
+// office parcel, or level 8); a page opens at its level. src: the actions whose finds go there (null = anywhere).
+export const ALBUM = {
+  openLevel: 8, divisor: (L) => Math.max(60, xpToNext(L)), maxChance: 0.5, pity: 1.5,
+  launchPages: 8, launch: { gems: 10, gift: 'curio', title: 'Keeper of Keepsakes' },
+  all: { title: 'Valley Historian' }, voucherFallbackGems: 15,
+  pages: [
+    { id: 'meadow', name: 'Meadow Finds', icon: '🌼', level: 0, src: ['crop'], hint: 'Turns up while harvesting crops', prize: { gems: 3, gift: 'bluebath' },
+      items: [['clover', '🍀', 'Four-Leaf Clover'], ['ladybird', '🐞', 'Ladybird'], ['butterfly', '🦋', 'Butterfly'], ['snail', '🐌', 'Garden Snail'], ['caterpillar', '🐛', 'Caterpillar'], ['blossom', '🌸', 'Cherry Blossom']] },
+    { id: 'barn', name: 'Barnyard Bits', icon: '🔔', level: 8, src: ['animal'], hint: 'Turns up while collecting from animals', prize: { gems: 4, gift: 'copperwell' },
+      items: [['bell', '🔔', 'Cow Bell'], ['feather', '🪶', 'Rooster Feather'], ['gloves', '🧤', 'Work Gloves'], ['chick', '🐣', 'Hatching Chick'], ['paw', '🐾', 'Paw-Print Tag'], ['rosette', '🏵️', 'Prize Rosette']] },
+    { id: 'kitchen', name: 'Grandma\'s Kitchen', icon: '🫖', level: 11, src: ['workshop'], hint: 'Turns up when you collect workshop goods', prize: { gems: 5, gift: 'rosepicnic' },
+      items: [['teapot', '🫖', 'Teapot'], ['spoon', '🥄', 'Wooden Spoon'], ['skillet', '🍳', 'Skillet'], ['bowl', '🥣', 'Mixing Bowl'], ['cupcake', '🧁', 'Cupcake'], ['timer', '⏲️', 'Kitchen Timer']] },
+    { id: 'notes', name: 'Neighbourly Notes', icon: '💌', level: 14, src: ['order', 'visitor', 'wagon'], hint: 'Turns up with orders, visitors and wagon crates', prize: { gems: 5, gift: 'blossomarch' },
+      items: [['letter', '💌', 'Love Letter'], ['postcard', '✉️', 'Postcard'], ['camera', '📷', 'Old Camera'], ['photo', '🖼️', 'Old Photo'], ['scarf', '🧣', 'Knitted Scarf'], ['ticket', '🎟️', 'Fair Ticket']] },
+    { id: 'orchard', name: 'Orchard Treasures', icon: '🦉', level: 17, src: ['fruit', 'crop'], hint: 'Turns up while picking fruit or harvesting', prize: { gems: 6, gift: 'harvestmill' },
+      items: [['chestnut', '🌰', 'Chestnut'], ['maple', '🍁', 'Maple Leaf'], ['autumn', '🍂', 'Autumn Leaf'], ['squirrel', '🐿️', 'Carved Squirrel'], ['owl', '🦉', 'Owl Figurine'], ['hedgehog', '🦔', 'Hedgehog']] },
+    { id: 'market', name: 'Market Day', icon: '⚖️', level: 19, src: null, hint: 'Turns up anywhere you farm', prize: { gems: 6, gift: 'mossfountain' },
+      items: [['scales', '⚖️', 'Brass Scales'], ['abacus', '🧮', 'Abacus'], ['tag', '🏷️', 'Price Tag'], ['dice', '🎲', 'Lucky Dice'], ['yoyo', '🪀', 'Yo-yo'], ['marble', '🔮', 'Glass Marble']] },
+    { id: 'pond', name: 'Mill Pond', icon: '🐸', level: 24, src: null, hint: 'Turns up anywhere you farm', prize: { gems: 7, gift: 'lilacgazebo' },
+      items: [['frog', '🐸', 'Frog'], ['shell', '🐚', 'Pond Shell'], ['swan', '🦢', 'Swan'], ['turtle', '🐢', 'Turtle'], ['duck', '🦆', 'Duckling'], ['canoe', '🛶', 'Toy Canoe']] },
+    { id: 'attic', name: 'Mabel\'s Attic', icon: '📔', level: 27, src: null, hint: 'Turns up anywhere you farm', prize: { gems: 8, gift: 'silverrooster' },
+      items: [['diary', '📔', 'Mabel\'s Diary'], ['ring', '💍', 'Grandpa\'s Ring'], ['doll', '🪆', 'Nesting Doll'], ['teddy', '🧸', 'Teddy Bear'], ['radio', '📻', 'Old Radio'], ['clock', '🕰️', 'Mantel Clock']] },
+    { id: 'heirloom', name: 'Family Heirlooms', icon: '👑', level: 31, src: null, hint: 'Turns up anywhere you farm', prize: { gems: 8, gift: 'skyballoon' },
+      items: [['crown', '👑', 'Tin Crown'], ['key', '🗝️', 'Skeleton Key'], ['suitcase', '🧳', 'Old Suitcase'], ['fiddle', '🎻', 'Old Fiddle'], ['mirror', '🪞', 'Hand Mirror'], ['horn', '📯', 'Herald Horn']] },
+    { id: 'stars', name: 'Starry Nights', icon: '🔭', level: 35, src: null, hint: 'Turns up anywhere you farm', prize: { gems: 8, voucher: 1 },
+      items: [['telescope', '🔭', 'Telescope'], ['moon', '🌙', 'Moon Lantern'], ['star', '🌠', 'Shooting Star'], ['planet', '🪐', 'Planet Mobile'], ['comet', '☄️', 'Comet Charm'], ['cricket', '🦗', 'Cricket Box']] },
+    { id: 'festival', name: 'Festival Keepsakes', icon: '🎠', level: 37, src: null, hint: 'Turns up anywhere you farm', prize: { gems: 10, voucher: 1 },
+      items: [['carousel', '🎠', 'Carousel Horse'], ['kite', '🪁', 'Kite'], ['masks', '🎭', 'Theatre Masks'], ['bigtop', '🎪', 'Toy Big Top'], ['streamer', '🎏', 'Carp Streamer'], ['chime', '🎐', 'Wind Chime']] },
+    { id: 'champion', name: 'Grand Champion', icon: '🥇', level: 39, src: null, hint: 'Turns up anywhere you farm', prize: { gems: 10, voucher: 2 },
+      items: [['gold', '🥇', 'Gold Medal'], ['silver', '🥈', 'Silver Medal'], ['bronze', '🥉', 'Bronze Medal'], ['medal', '🏅', 'Prize Medal'], ['badge', '🎖️', 'Judge\'s Badge'], ['toast', '🥂', 'Toast Glasses']] },
+  ],
+};
+// 'meadow:clover' → { id, page, item, icon, name }
+export const KEEPSAKES = {};
+for (const p of ALBUM.pages) for (const [item, icon, name] of p.items) KEEPSAKES[`${p.id}:${item}`] = { id: `${p.id}:${item}`, page: p.id, item, icon, name };
 
 // Levels where future content can slot in without rebalancing (keep these in mind when adding features).
 // Planned next: seasons & festivals (L32), bigger map (L33), fishing (L34), farm kitchen (L36),

@@ -421,6 +421,25 @@ function serveChain(g, ui, v, extra = {}) {
 }
 
 // ---------------------------------------------------------------- candidate actions (null when n/a)
+// The Post (§2.8): a parcel is waiting → 📬 → Open → Lovely. In the tour only parcel #1 (Mabel's line); never during a
+// hard beat, graduation or a placement. The player always opens it: it is never queued or popped up by itself.
+function postStep(g, ui) {
+  const st = g.postStatus();
+  if (!st.ready || hardBeat(g) || graduationPending(g) || ui.placing) return null;
+  const gd = guided(g);
+  if (gd && st.n !== 0) return null;
+  return reach(ui, uiStep('post', 'btn:post', { chain: ['btn:post', 'modal:post:open'], icon: '📬', label: 'Open your parcel', stepKey: gd ? 'post1' : null }));
+}
+// a waiting parcel with coin value (pantry, Big, #5, the office parcel): earn() may send you to open it
+const postPays = (g) => { const c = g.postContents(); return c.coins > 0 || Object.keys(c.items).length > 0; };
+const postCoinsStep = (g, ui) => (postPays(g) ? postStep(g, ui) : null);
+
+// where the Mailbox goes up: by the road, next to the order board (else the field's middle)
+export function mailboxNear(game) {
+  const board = game.s.objects.find((o) => o.type === 'orderboard');
+  return board ? [board.x, board.z] : fieldCentre(game);
+}
+
 function choreStep(g, ui) {
   if (guided(g) || !g.s.chores) return null; // chores are introduced at graduation
   const i = g.s.chores.list.findIndex((c) => !c.claimed && c.progress >= c.count);
@@ -629,7 +648,7 @@ export function earn(game, ui = {}, n = 0, { xp = false } = {}) {
   ui = normUi(ui);
   const tries = xp
     ? [choreStep, collectStep, harvestAny, plantIdle, deliverStep, serveStep, feedStep, makeIdle, debrisStep, plowIdle]
-    : [choreStep, deliverStep, serveStep, collectStep, harvestAny, (gg, u) => sellStep(gg, u, 'silo', Math.min(n, 20)) || sellStep(gg, u, 'barn', Math.min(n, 20)),
+    : [choreStep, postCoinsStep, deliverStep, serveStep, collectStep, harvestAny, (gg, u) => sellStep(gg, u, 'silo', Math.min(n, 20)) || sellStep(gg, u, 'barn', Math.min(n, 20)),
       plantIdle, feedStep, makeIdle, debrisStep, sellFewStep];
   for (const f of tries) {
     const s = f(g, ui);
@@ -644,8 +663,10 @@ export function recommendIdle(game, ui = {}, { saveFor = 0 } = {}) {
   const g = game;
   ui = normUi(ui);
   const gd = guided(g);
+  // the tour's parcel #1 comes first (it is what Mabel talks about); coached: chores, then a waiting parcel
   const tries = [
-    gd ? null : choreStep,
+    gd ? postStep : choreStep,
+    gd ? null : postStep,
     collectStep,
     (gg, u) => feedStep(gg, u),
     harvestAny,
@@ -1134,7 +1155,23 @@ export function levelUpGo(game, level) {
 // ctx is the UI's session state (GuideController.tipCtx), e.g. cameraTipDue: a pen or workshop was placed
 // after graduation. Later features add their entries here.
 const FARM_AGE_TIP = 30 * 60000;
+//   marks: other tips this one stands in for (seen with it)
 export const EXTRA_TIPS = [
+  {
+    // a farm from before v4: one card about everything new (it also stands in for tip:camera and tip:post2)
+    key: 'tip:whatsNew',
+    text: 'New: 📬 a parcel every 8 hours, 📖 a Keepsake Album, and 🧭 to turn and tilt your view!',
+    when: (g) => g.hasSeen('whatsNew:pending'),
+    marks: ['tip:camera', 'tip:post2'],
+    onTap: (guide) => guide.hud.showPost?.(),
+  },
+  {
+    // the first time parcel #2 is opened: the cadence, once
+    key: 'tip:post2',
+    text: 'Parcels come at 30 min, 1 h and 4 h — then one every 8 hours. They always wait! 📬',
+    when: (g) => g.s.post.n >= 2 && g.s.post.n <= 5 && !g.s.post.office && !g.hasSeen('whatsNew:pending'),
+    onTap: (guide) => guide.hud.openPostPop?.(),
+  },
   {
     key: 'tip:camera',
     text: 'Tip: twist two fingers to turn your farm — or tap 🧭 to turn and tilt.',
@@ -1151,9 +1188,16 @@ export function pendingTip(game, ctx = {}) {
   if (guided(game)) return null;
   for (const t of EXTRA_TIPS) {
     if (game.hasSeen(t.key) || !t.when(game, ctx)) continue;
-    return { key: t.key, text: typeof t.text === 'function' ? t.text(game, ctx) : t.text, onTap: t.onTap || null, extra: true };
+    return { key: t.key, text: typeof t.text === 'function' ? t.text(game, ctx) : t.text, onTap: t.onTap || null, marks: t.marks || [], extra: true };
   }
   return null;
+}
+
+// a pendingTip() result is being shown: it and the tips it stands in for are seen (false if it already was)
+export function markTipSeen(game, tip) {
+  if (!game.markSeen(tip.key)) return false;
+  for (const k of tip.marks || []) game.markSeen(k);
+  return true;
 }
 
 // Seed popover order (§3.2): goal crop ★ Goal, then Meanwhile/order crop ★ Order, then the last used,
@@ -1251,6 +1295,8 @@ function modalStep(g, kind) {
   }
   if (kind === 'daily') return uiStep('modal:daily', 'modal:daily:claim', { ...base, stepKey: graduationPending(g) ? 'gradDaily' : null, icon: '🎁', label: 'Daily gift' });
   if (kind === 'chest') return uiStep('modal:chest', 'modal:chest:open', { ...base, stepKey: graduationPending(g) ? 'grad' : null, icon: '🎁', label: 'Open the chest' });
+  // the parcel modal: Open! ✨ then Lovely! (one key for both)
+  if (kind === 'post') return uiStep('modal:post', 'modal:post:open', { ...base, icon: '📬', label: 'Open your parcel', stepKey: guided(g) && g.s.post.n === 0 ? 'post1Open' : null });
   return uiStep('modal:guide', 'guide:next', { ...base, icon: GUIDE.icon, label: GUIDE.name });
 }
 
@@ -1260,7 +1306,8 @@ function modalStep(g, kind) {
 // Mabel never buys more of it; the step names ✕ for headless followers only (pointer: false).
 function placeStep(g, ui, pl) {
   const def = OBJECTS[pl.type] || {};
-  const stepKey = pl.gift ? 'gradGift' : pl.type === 'coop' ? 'coopPlace' : 'place';
+  // (only the tour's Scarecrow gets Mabel's Scarecrow line; the Mailbox has its own coach line)
+  const stepKey = pl.gift ? (pl.type === CHAPTERS[0].reward.gift ? 'gradGift' : null) : pl.type === 'coop' ? 'coopPlace' : 'place';
   const base = { build: pl.type, gift: !!pl.gift, stepKey, icon: def.icon || '✓', label: `Build ${def.name || ''}`.trim() };
   // nowhere it fits: back out, and the build step makes room first
   if (pl.valid === false && OBJECTS[pl.type] && !g.findFreeSpot(pl.type, 0)) return uiStep(`place:${pl.type}:cancel`, 'place:cancel', { ...base, stepKey: null, label: 'No room yet' });
@@ -1320,7 +1367,7 @@ function guidedLine(g, s) {
 // HUD groups a guided step needs revealed (§4 progressive reveal), minus what's already shown
 const REVEAL_OF = [[/^btn:shop|^shop:/, 'shop'], [/^btn:barn|^storage:/, 'barn'], [/^btn:orders|^order:/, 'orders'], [/^tool:/, 'tools'],
   [/^quest:/, 'quest'], [/^level:/, 'level'], [/^pill:gems/, 'gems'], [/^btn:today|^today:/, 'today'], [/^btn:trophy/, 'trophy'],
-  [/^btn:camera|^cam:/, 'camera']];
+  [/^btn:camera|^cam:/, 'camera'], [/^btn:post|^modal:post|^today:post/, 'post']];
 
 function revealFor(g, steps) {
   if (g.revealAll()) return [];
@@ -1333,6 +1380,7 @@ function revealFor(g, steps) {
   if (qi >= qIndex('order1')) keys.add('orders');
   if (qi >= qIndex('coop')) keys.add('shop');
   if (qi >= qIndex('plow')) keys.add('tools');
+  if (g.s.post?.n > 0) keys.add('post'); // the post pill stays once a parcel was opened
   for (const s of steps) {
     if (!s) continue;
     for (const k of s.reveal || []) keys.add(k);
@@ -1353,10 +1401,11 @@ function finish(g, ui, s) {
     const mw = { ...s.meanwhile, why: 'meanwhile' };
     const q = g.currentQuest();
     // B10: the "tidy up" line comes when the finger reaches the weeds and stones (harvesting first keeps the goal's line)
+    // (and parcel #1's "The post's here!" while the eggs are on their way)
     if (mw.stepKey !== 'busy') {
       const tidy = gd && q.id === 'eggs' && mw.action === 'clear';
-      mw.stepKey = tidy ? 'eggsMeanwhile' : null;
-      mw.say = tidy ? TUTORIAL.lines.eggsMeanwhile : null;
+      mw.stepKey = tidy ? 'eggsMeanwhile' : gd && mw.stepKey === 'post1' ? 'post1' : null;
+      mw.say = TUTORIAL.lines[mw.stepKey] ?? null;
     }
     out.meanwhile = mw;
   }
@@ -1369,7 +1418,8 @@ function finish(g, ui, s) {
 // Results are cached per (game change counter, game second, ui signature).
 const EVENTS = ['coins', 'gems', 'xp', 'levelup', 'inventory', 'soil', 'objectAdded', 'objectRemoved', 'objectMoved', 'animalAdded', 'animalChanged',
   'factoryChanged', 'treeChanged', 'orders', 'orderDone', 'visitors', 'visitorServed', 'quest', 'questComplete', 'chores', 'daily', 'land',
-  'storageUpgraded', 'tutorial', 'reveal', 'gifts', 'chapter', 'debrisCleared', 'wagon', 'drop', 'safetyNet', 'project'];
+  'storageUpgraded', 'tutorial', 'reveal', 'gifts', 'chapter', 'debrisCleared', 'wagon', 'drop', 'safetyNet', 'project',
+  'post', 'postReady', 'keepsake', 'album', 'charm'];
 const memo = new WeakMap();
 
 function memoFor(game) {

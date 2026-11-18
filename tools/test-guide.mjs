@@ -7,7 +7,7 @@ import { Game } from '../src/game/state.js';
 import * as CFG from '../src/game/config.js';
 import {
   planStep, recommendIdle, reserves, questBlock, need, earn, PLANNERS, shouldAutoShowDaily, nextMode, isGuideKey,
-  pendingInterrupt, graduationPending, plantCap, placementSpot, levelUpGo, pendingTip, seedList, questCardInfo, hardBeat,
+  pendingInterrupt, graduationPending, plantCap, placementSpot, levelUpGo, pendingTip, seedList, questCardInfo, hardBeat, markTipSeen,
 } from '../src/game/guide.js';
 import { GuideFollower, SimUI } from './simui.mjs';
 
@@ -176,6 +176,7 @@ test('planner: B4–B12 point where the tour says, with the tour lines', () => {
   assert.ok(eggsMw.some((m) => m.action === 'clear'), 'the eggs wait reaches the debris');
   for (const m of eggsMw) {
     if (m.action === 'clear') assert.equal(m.stepKey, 'eggsMeanwhile', m.key);
+    else if (m.stepKey === 'post1') assert.equal(m.say, CFG.TUTORIAL.lines.post1, 'parcel #1 comes with its own line');
     else if (m.stepKey !== 'busy') assert.equal(m.say, null, `no tidy-up line on ${m.key}`);
   }
   const fin = step('bread', 'factory:finish');
@@ -669,6 +670,167 @@ test('turn & tilt: 🧭 is revealed at the end of the tour; its keys are guide k
   assert.equal(sim.tap('cam:up'), 0);
 });
 
+// ---------------------------------------------------------------- the Post (§2.8)
+// a tour farm in Chapter 1's egg wait (two fed chickens, eggs due 3 minutes after parcel #1)
+function eggWait() {
+  const g = fresh();
+  g.markSeen('welcome');
+  setQuest(g, 'eggs');
+  setLevel(g, 2);
+  const coop = put(g, 'coop', ...CFG.tutorialTile(CFG.TUTORIAL.lots.coop));
+  for (let i = 0; i < 2; i++) g.s.animals.push({ id: g.s.nextId++, type: 'chicken', home: coop.id, readyAt: g.s.post.nextAt + 3 * 60000 });
+  return g;
+}
+
+test('post (tour): parcel #1 at 5:00 is the egg wait\'s Meanwhile with Mabel\'s line; the modal says post1Open; never in a hard beat, graduation, placement or after #1', () => {
+  for (const k of ['btn:post', 'modal:post:open', 'today:post']) assert.ok(isGuideKey(k), k);
+  const g = eggWait();
+  t = g.s.post.nextAt - 1000;
+  let s = planStep(g, {}, { cache: false });
+  assert.equal(s.kind, 'wait', 'waiting for eggs');
+  assert.notEqual(s.meanwhile?.target?.ui, 'btn:post', 'not before 5:00');
+  assert.ok(!(s.reveal || []).includes('post'), 'the pill stays hidden');
+  t = g.s.post.nextAt;
+  s = planStep(g, {}, { cache: false });
+  assert.equal(s.kind, 'wait');
+  assert.equal(s.meanwhile.target.ui, 'btn:post');
+  assert.deepEqual(s.meanwhile.chain, ['btn:post', 'modal:post:open']);
+  assert.equal(s.meanwhile.stepKey, 'post1');
+  assert.equal(s.meanwhile.say, CFG.TUTORIAL.lines.post1);
+  assert.ok(s.reveal.includes('post'), 'the pill pops in where the finger points');
+  assert.equal(questCardInfo(g, s).meanwhile.icon, '📬');
+  // the modal: Open! ✨ → Lovely! on one key
+  const m = planStep(g, { modal: 'post' }, { cache: false });
+  assert.equal(m.target.ui, 'modal:post:open');
+  assert.equal(m.stepKey, 'post1Open');
+  assert.equal(m.say, CFG.TUTORIAL.lines.post1Open);
+  const sim = new SimUI(g);
+  sim.apply(s.meanwhile);
+  assert.equal(sim.ui.modal, 'post');
+  sim.tap('modal:post:open');
+  assert.equal(g.s.post.n, 1, 'claimed on Open');
+  assert.equal(sim.ui.modal, 'post', 'Lovely! still to tap');
+  assert.equal(planStep(g, sim.view(), { cache: false }).target.ui, 'modal:post:open');
+  assert.equal(planStep(g, sim.view(), { cache: false }).stepKey, null, 'after #1 no more lines');
+  sim.tap('modal:post:open');
+  assert.equal(sim.ui.modal, null);
+  assert.ok(planStep(g, {}, { cache: false }).reveal.includes('post'), 'opened once: the pill stays');
+  // and back to tidying
+  assert.notEqual(planStep(g, {}, { cache: false }).meanwhile?.target?.ui, 'btn:post');
+  // guided: only parcel #1
+  const two = eggWait();
+  two.s.post.n = 1;
+  t = two.s.post.nextAt = two.now();
+  assert.ok(two.postStatus().ready);
+  assert.notEqual(planStep(two, {}, { cache: false }).meanwhile?.target?.ui, 'btn:post', 'guided, n ≥ 1');
+  // never during a hard beat, graduation or a placement
+  const hb = fresh();
+  hb.markSeen('welcome');
+  t = hb.s.post.nextAt;
+  assert.ok(hardBeat(hb) && hb.postStatus().ready);
+  assert.notEqual(recommendIdle(hb, {}).target?.ui, 'btn:post', 'hard beat');
+  const place = eggWait();
+  t = place.s.post.nextAt;
+  assert.notEqual(recommendIdle(place, { placing: { type: 'coop', valid: true } }).target?.ui, 'btn:post', 'placing');
+  assert.equal(recommendIdle(place, {}).target?.ui, 'btn:post');
+  const grad = fresh();
+  grad.markSeen('welcome');
+  setQuest(grad, 'bread');
+  setLevel(grad, 4);
+  grad.s.quest.progress = 1;
+  grad.claimQuest();
+  t = grad.s.post.nextAt;
+  assert.ok(graduationPending(grad) && grad.postStatus().ready);
+  for (let i = 0; i < 4; i++) {
+    const st = planStep(grad, {}, { cache: false });
+    assert.ok(![st.target?.ui, st.meanwhile?.target?.ui].includes('btn:post'), 'graduation is untouched');
+    grad.markSeen(['grad:chest', 'grad:gift', 'grad:daily', 'grad:end'][i]);
+  }
+});
+
+test('post (coached): after chores in the Meanwhile; earn() only for coin-value parcels; the Mailbox ghost has no Scarecrow line; tips', () => {
+  const g = coachedAt('pasture', 5); // saving up for the pasture: a coins wait with a Meanwhile
+  g.s.coins = 0;
+  g.s.post.n = 1;
+  t = g.s.post.nextAt;
+  g.ensureChores();
+  g.s.chores.list[0].progress = g.s.chores.list[0].count;
+  assert.equal(recommendIdle(g, {}).target.ui, 'btn:today', 'a ready chore first');
+  g.claimChore(0);
+  assert.equal(recommendIdle(g, {}).target.ui, 'btn:post', 'then the parcel');
+  assert.equal(recommendIdle(g, {}).stepKey, null, 'no tour line when coached');
+  // as the Meanwhile of a wait (eggs on their way), with no line
+  const e = coachedAt('eggs', 3);
+  const coop = put(e, 'coop', ...CFG.tutorialTile(CFG.TUTORIAL.lots.coop));
+  e.s.animals.push({ id: e.s.nextId++, type: 'chicken', home: coop.id, readyAt: t + 3 * 60000 });
+  e.s.post.n = 1;
+  e.s.post.nextAt = t;
+  const ew = planStep(e, {}, { cache: false });
+  assert.equal(ew.kind, 'wait');
+  assert.equal(ew.meanwhile.target.ui, 'btn:post');
+  assert.equal(ew.meanwhile.say, null);
+  assert.equal(questCardInfo(e, ew).meanwhile.label, 'Open your parcel');
+  // earn(): a parcel with coin value only
+  for (const [n, pays] of [[1, false], [5, false], [6, true], [7, false], [8, true]]) {
+    g.s.post.n = n;
+    assert.equal(g.postStatus().ready, true);
+    assert.equal(earn(g, {}, 500).target?.ui === 'btn:post', pays, `n ${n} (${g.postStatus().kind})`);
+  }
+  g.s.post = { ...g.s.post, n: 5, office: true };
+  assert.equal(earn(g, {}, 500).target?.ui, 'btn:post', 'the office parcel pays');
+  // the Mailbox ghost: ✓ with no Scarecrow line (its own coach line comes from the UI)
+  const pl = planStep(g, { placing: { type: 'mailbox', valid: true, gift: true } }, { cache: false });
+  assert.equal(pl.target.ui, 'place:ok');
+  assert.equal(pl.stepKey, null);
+  const gd = fresh();
+  gd.markSeen('welcome');
+  assert.equal(planStep(gd, { placing: { type: 'scarecrow', valid: true, gift: true } }, { cache: false }).stepKey, 'gradGift');
+  // SimUI: 📬 → Open → Lovely → the Mailbox goes up by the order board
+  const h = coachedAt('pasture', 5);
+  h.s.post.n = 3;
+  t = h.s.post.nextAt;
+  const sim = new SimUI(h);
+  sim.tap('btn:post');
+  assert.equal(sim.ui.modal, 'post');
+  assert.ok(sim.tap('modal:post:open') >= 2, 'the reveal takes a moment');
+  assert.deepEqual(h.s.gifts, ['mailbox']);
+  sim.tap('modal:post:open');
+  assert.equal(sim.ui.modal, null);
+  assert.equal(sim.ui.placing?.type, 'mailbox');
+  assert.ok(sim.ui.placing.gift && sim.ui.placing.valid);
+  sim.tap('place:ok');
+  const box = h.s.objects.find((o) => o.type === 'mailbox');
+  const board = h.s.objects.find((o) => o.type === 'orderboard');
+  assert.ok(box && box.free, 'placed free');
+  assert.ok(Math.hypot(box.x - board.x, box.z - board.z) <= 6, 'by the road, near the order board');
+  assert.deepEqual(h.s.gifts, []);
+  assert.equal(sim.tap('today:post'), 8, 'nothing waiting: the Today row does nothing');
+  assert.equal(sim.ui.modal, null);
+  // tips: tip:post2 once #2 is opened; What's new (a migrated farm) stands in for tip:post2 and tip:camera
+  const c = coachedAt('carrots', 2);
+  assert.equal(pendingTip(c), null);
+  c.s.post.n = 2;
+  const p2 = pendingTip(c);
+  assert.equal(p2.key, 'tip:post2');
+  assert.ok([...p2.text].length <= 90 && typeof p2.onTap === 'function');
+  c.s.settings.hints = 'off';
+  assert.equal(pendingTip(c), null, 'hints off');
+  const gt = fresh();
+  gt.s.post.n = 2;
+  advance(31 * 60);
+  assert.equal(pendingTip(gt), null, 'never in the tour');
+  const w = coachedAt('carrots', 2);
+  w.markSeen('whatsNew:pending');
+  w.s.post = { ...w.s.post, n: 5, office: true };
+  const wn = pendingTip(w, { cameraTipDue: true });
+  assert.equal(wn.key, 'tip:whatsNew');
+  assert.ok([...wn.text].length <= 90);
+  assert.ok(markTipSeen(w, wn));
+  assert.ok(w.hasSeen('tip:camera') && w.hasSeen('tip:post2'));
+  assert.equal(pendingTip(w, { cameraTipDue: true }), null, 'no camera or cadence tip after What\'s new');
+  assert.equal(markTipSeen(w, wn), false, 'once');
+});
+
 // ---------------------------------------------------------------- the guide-follower
 const SEEDS = [1, 2, 3, 4, 5];
 const runs = [];
@@ -693,9 +855,11 @@ function follow(seed, { reloadCheck = false } = {}) {
       if (before !== after) mismatches.push(`${g.currentQuest().id || g.currentQuest().text}: ${before} ≠ ${after}`);
     } : null;
     const onStep = (s) => { if (g.tutorialMode() === 'guided' && s.meanwhile) guidedMeanwhile.push(s.meanwhile); assertKeys(s, `(seed ${seed})`); };
+    const parcels = []; // minutes at which each parcel was opened
+    g.on('post', () => parcels.push((t - T0) / 60000));
     const f = new GuideFollower(g, { sim, advance, onQuest, onStep });
     const r = f.run({ maxSec: 150 * 60, until: (gg) => gg.s.quest.index >= CFG.QUESTS.length });
-    return { seed, r, mismatches, guidedMeanwhile, done: g.s.quest.index >= CFG.QUESTS.length };
+    return { seed, r, mismatches, guidedMeanwhile, parcels, done: g.s.quest.index >= CFG.QUESTS.length };
   });
 }
 
@@ -710,6 +874,8 @@ test('guide-follower: Chapter 1 within 10 sim-minutes; the whole list (median of
     assert.equal(r.stalls, 0, `seed ${seed}: no taps that change nothing`);
     assert.equal(r.safetyNet, 0, `seed ${seed}: the safety net never fires for a guided player`);
   }
+  // N8: parcel #1 is opened inside Chapter 1 (its egg wait) on every seed
+  for (const { seed, r, parcels } of runs) assert.ok(parcels[0] >= 5 && parcels[0] < r.chapters[1], `seed ${seed}: parcel #1 at ${parcels[0]} min, Ch1 ${r.chapters[1]}`);
   const median = runs.map((x) => x.r.chapters[3]).sort((a, b) => a - b)[Math.floor(runs.length / 2)];
   assert.ok(median <= 90, `median whole-list time ${median} min`);
 });
@@ -835,7 +1001,8 @@ if (runs.length) {
   console.log('\n  guide-follower (4 s per tap), minutes:');
   for (const { seed, r } of runs) {
     const L = Object.entries(r.levels).map(([l, m]) => `L${l} ${m}`).join(' · ');
-    console.log(`    seed ${seed}: Ch1 ${r.chapters[1]} · Ch2 ${r.chapters[2]} · Ch3 ${r.chapters[3]} | ${L} | gap ${r.longestGap}s · idle ${Math.round((r.idleSec / 60 / r.minutes) * 100)}% · silo 90% at ${r.firstSiloFull ?? '–'}`);
+    const p = runs.find((x) => x.seed === seed).parcels.slice(0, 4).map((m) => m.toFixed(1)).join(' ');
+    console.log(`    seed ${seed}: Ch1 ${r.chapters[1]} · Ch2 ${r.chapters[2]} · Ch3 ${r.chapters[3]} | ${L} | gap ${r.longestGap}s · idle ${Math.round((r.idleSec / 60 / r.minutes) * 100)}% · silo 90% at ${r.firstSiloFull ?? '–'} · parcels ${p}`);
   }
 }
 console.log(`\n${pass} passed, ${fail} failed`);

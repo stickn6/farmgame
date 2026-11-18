@@ -4,7 +4,7 @@
 import * as CONFIG from '../game/config.js';
 import {
   ITEMS, CROPS, ANIMALS, OBJECTS, RECIPES, STORAGE, ACHIEVEMENTS, DAILY, VISITORS, MASTERY, PLOTS,
-  CHORES, WAGON, PROJECTS, CAMERA, xpForLevel, unlocksAtLevel, nextUnlockLevel,
+  CHORES, WAGON, PROJECTS, CAMERA, POST, KEEPSAKES, xpForLevel, unlocksAtLevel, nextUnlockLevel,
 } from '../game/config.js';
 import { isHome } from '../game/camera.js';
 
@@ -58,6 +58,18 @@ export function fmtClock(sec) {
 }
 
 const fmtNum = (n) => n.toLocaleString('en-US');
+// the Post's countdown: 4:12 under an hour, 3h 12m above
+export const postClock = (ms) => {
+  const sec = Math.max(0, Math.ceil(ms / 1000));
+  if (sec < 3600) return fmtClock(sec);
+  const m = Math.floor(sec / 60);
+  return `${Math.floor(m / 60)}h ${m % 60}m`;
+};
+// the welcome parcels' farm ages (the timeline strip): 5m ✓ · 15m ✓ · 30m ● · 1h · 4h · then every 8h
+const POST_AGES = (() => {
+  let at = 0;
+  return POST.gaps.map((g) => { at += g; return at < 3600 ? `${at / 60}m` : `${at / 3600}h`; });
+})();
 
 // inline-SVG icons of the 🧭 button and its view pad (not emoji: 🏠 is the Shop's Buildings tab, ⟳ the ghost's rotate)
 const svg = (body, size = 18) => `<svg viewBox="0 0 24 24" width="${size}" height="${size}" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">${body}</svg>`;
@@ -105,8 +117,8 @@ export class HUD {
   }
 
   uiChanged(reason) {
-    // a panel, modal or placement takes over the screen: the view pad gives way
-    if (reason === 'panel' || reason === 'modal' || reason === 'placement') this.closeCamPad();
+    // a panel, modal or placement takes over the screen: the view pad and the post popover give way
+    if (reason === 'panel' || reason === 'modal' || reason === 'placement') { this.closeCamPad(); this.closePostPop(); }
     this.hook('onUiChange', reason);
   }
 
@@ -173,7 +185,13 @@ export class HUD {
     this.camBtn = h('button', { class: 'round-btn cam-btn', title: 'Turn & tilt the view (Q/E · Z/X · C)', 'aria-label': 'Turn and tilt the view', 'aria-expanded': 'false',
       'data-guide': 'btn:camera', 'data-reveal': 'camera', html: NEEDLE }, this.camDot);
     this.camNeedle = this.camBtn.querySelector('.cam-needle');
-    this.row3 = h('div', { class: 'row3' }, this.camBtn);
+    // the post pill: 📪 4:12 and a thin bar while a parcel is on its way, 📬 Open! once it waits
+    this.postIco = h('span', { class: 'pp-ico' }, '📪');
+    this.postText = h('span', { class: 'pp-text' }, '');
+    this.postBar = h('i', { class: 'pp-bar' });
+    this.postPill = h('button', { class: 'post-pill', title: 'The Post', 'aria-label': 'The Post', 'data-guide': 'btn:post', 'data-reveal': 'post', onclick: () => this.postTap() },
+      this.postIco, this.postText, h('span', { class: 'pp-track' }, this.postBar));
+    this.row3 = h('div', { class: 'row3' }, this.postPill, this.camBtn);
     this.topBar = h('div', { class: 'top-bar' },
       h('div', { class: 'top-left' }, this.levelBoxEl, this.questCard),
       h('div', { class: 'top-right' }, this.pills, this.roundBtns, this.row3),
@@ -218,6 +236,8 @@ export class HUD {
 
     this.root.append(this.topBar, this.toolHint, this.seedBar, this.placeBar, this.toolbar, this.camPad, this.toasts, this.modalLayer, this.fx);
     this.revealEls = [...this.root.querySelectorAll('[data-reveal]')];
+    this._postWasReady = this.game.postStatus().ready;
+    this.refreshPostPill();
   }
 
   // Quest card: tap = claim when done, else the guide's Show me (or a text hint); long-press = text hint.
@@ -266,6 +286,7 @@ export class HUD {
       this.toast(`${ITEMS[type].icon} ${CROPS[type].name} mastery ${stars(n)}! ${reward.gems ? `+💎${reward.gems}` : ''}`, 'good');
     });
     g.on('storageUpgraded', ({ id, level }) => { this.toast(`${STORAGE[id].icon} ${STORAGE[id].name} upgraded to level ${level + 1}!`, 'good'); this.refreshPanel(); });
+    g.on('post', () => { this.refreshPostPill(); this.refreshPanel(); });
   }
 
   refreshAll() {
@@ -635,6 +656,181 @@ export class HUD {
   // { x, z } of the tile the open popover belongs to, or null
   seedPopoverOpen() { return this.seedPop ? { x: this.seedPop.x, z: this.seedPop.z } : null; }
 
+  // ---------------------------------------------------------------- the Post (§2.5–2.6)
+  // the pill (1 Hz, and after each opening): rewritten only when its text or state changes
+  refreshPostPill() {
+    const g = this.game, st = g.postStatus();
+    const text = st.ready ? 'Open!' : postClock(st.msLeft);
+    if (this._postText !== text) { this._postText = text; this.postText.textContent = text; }
+    if (this._postReady !== st.ready) {
+      this._postReady = st.ready;
+      this.postPill.classList.toggle('ready', st.ready);
+      this.postIco.textContent = st.ready ? '📬' : '📪';
+      this.postPill.setAttribute('aria-label', st.ready ? 'The Post: a parcel is waiting — open it' : 'The Post: next parcel on its way');
+    }
+    const w = st.ready ? '100%' : (Math.max(0, Math.min(1, st.progress)) * 100).toFixed(1) + '%';
+    if (this.postBar.style.width !== w) this.postBar.style.width = w;
+    // one chime when a parcel turns up while you can see the pill (never for one already waiting at load)
+    if (st.ready && !this._postWasReady && isShown(this.postPill)) { this.audio.play('quest'); this.popIn(this.postPill); }
+    this._postWasReady = st.ready;
+    if (this.postPop) this.renderPostPop();
+  }
+
+  postTap() {
+    this.audio.play('click');
+    if (this.game.postStatus().ready) this.showPost();
+    else if (this.postPop) this.closePostPop();
+    else this.openPostPop();
+  }
+
+  // the timeline strip of the welcome parcels: [{ label, state: 'done'|'next'|'' }] (n = parcels opened)
+  postStrip(n) {
+    const out = POST_AGES.map((label, i) => ({ label, state: i < n ? 'done' : i === n ? 'next' : '' }));
+    out.push({ label: `then every ${POST.every / 3600}h`, state: n >= POST_AGES.length ? 'next' : '' });
+    return h('div', { class: 'post-strip' }, out.map((x, i) => h('span', { class: x.state },
+      x.label, x.state === 'done' ? ' ✓' : x.state === 'next' ? ' ●' : '', i < out.length - 1 ? h('i', {}, ' · ') : null)));
+  }
+
+  // tap on the waiting pill: what's coming and when (closes after 5 s or on a tap elsewhere)
+  openPostPop() {
+    this.closePostPop();
+    this.closeCamPad();
+    const el = h('div', { class: 'mini-pop post-pop', role: 'dialog', 'aria-label': 'The Post' });
+    el.addEventListener('pointerdown', (e) => e.stopPropagation());
+    this.root.append(el);
+    const outside = (e) => { if (!el.contains(e.target) && !this.postPill.contains(e.target)) this.closePostPop(); };
+    this.postPop = { el, outside };
+    this.renderPostPop();
+    const r = this.row3.getBoundingClientRect();
+    el.style.top = Math.round(r.bottom + 6) + 'px';
+    el.style.right = Math.round(innerWidth - r.right) + 'px';
+    setTimeout(() => { if (this.postPop?.el === el) document.addEventListener('pointerdown', outside, true); }, 0);
+    clearTimeout(this._postPopTimer);
+    this._postPopTimer = setTimeout(() => this.closePostPop(), 5000);
+    this.uiChanged('popover');
+  }
+
+  renderPostPop() {
+    const p = this.postPop;
+    if (!p) return;
+    const st = this.game.postStatus();
+    const sig = `${st.ready}|${Math.ceil(st.msLeft / 1000)}|${st.n}|${st.teaser.label}`;
+    if (p.sig === sig) return;
+    p.sig = sig;
+    p.el.innerHTML = '';
+    p.el.append(...[
+      st.ready
+        ? h('div', { class: 'pp-head' }, h('b', {}, '📬 The Post'), ' · a parcel is waiting!')
+        : h('div', { class: 'pp-head' }, h('b', {}, '📪 The Post'), ' · next in ', h('b', {}, fmtClock(st.msLeft / 1000))),
+      h('div', {}, `Next: ${st.teaser.label}`),
+      st.intro ? this.postStrip(st.n) : null,
+      h('div', { class: 'muted small' }, 'It waits for you and never piles up.'),
+      st.ready ? h('button', { class: 'btn small', onclick: () => { this.closePostPop(); this.showPost(); } }, 'Open') : null,
+    ].filter(Boolean));
+  }
+
+  closePostPop() {
+    const p = this.postPop;
+    if (!p) return;
+    this.postPop = null;
+    clearTimeout(this._postPopTimer);
+    document.removeEventListener('pointerdown', p.outside, true);
+    p.el.remove();
+    this.uiChanged('popover');
+  }
+
+  // The parcel modal (data-modal="post"): the wrapped parcel with its sender and note → Open! ✨ (the parcel is
+  // opened right then: ctrl.claimPost) → the tiles pop in → Lovely! sends them flying home. One data-guide key for
+  // both buttons. Never shown by itself: the pill, the Today row, the Mailbox or a tip open it. Esc before Open
+  // closes it unopened; Enter presses the button.
+  showPost() {
+    const g = this.game;
+    this.closePostPop();
+    if (this.topModalKind() === 'post') return null;
+    if (!g.postStatus().ready) { this.openPostPop(); return null; }
+    const c = g.postContents();
+    const npc = VISITORS.npcs.find((x) => x.id === c.sender);
+    const reduced = !!this.ctrl.world?.prefersReducedMotion;
+    const what = c.wrap === 'postcard' ? 'A postcard' : c.wrap === 'big' && c.kind !== 'office' ? 'A big parcel' : 'A parcel';
+    const wrap = h('div', { class: `post-wrap ${c.wrap}` }, h('span', { class: 'pw-ico' }, c.wrap === 'postcard' ? '📨' : '📦'), c.wrap === 'big' ? h('span', { class: 'pw-bow' }, '🎀') : null);
+    const tiles = h('div', { class: 'lu-list post-tiles' });
+    const foot = h('div', { class: 'post-foot' });
+    const btn = h('button', { class: 'btn wide', 'data-guide': 'modal:post:open' }, 'Open! ✨');
+    const daily = this.revealed('today') && g.dailyStatus().canClaim ? h('div', { class: 'muted small' }, 'Your daily gift is in 🎁 Today') : null;
+    const modal = h('div', { class: 'levelup daily post-modal' + (reduced ? ' still' : '') },
+      wrap,
+      h('div', { class: 'post-title' }, `${what} from ${npc ? npc.name : 'Grandma Mabel'}!`),
+      h('div', { class: 'post-note' }, `“${c.note}”`),
+      tiles, foot, btn, daily);
+    let state = 'closed', res = null;
+    const open = () => {
+      if (state !== 'closed') return;
+      res = this.ctrl.claimPost?.() || null;
+      if (!res) { back._close(); return; }
+      state = 'opening';
+      wrap.classList.add('shake');
+      const reveal = () => {
+        wrap.classList.remove('shake');
+        wrap.classList.add('popped');
+        res.tiles.forEach((t, i) => {
+          const el = this.postTile(t);
+          el.style.animationDelay = (reduced ? 0 : i * 120) + 'ms';
+          tiles.append(el);
+        });
+        if (res.wrap === 'big' && !reduced) this.confetti(30);
+        const at = res.next.at - g.now();
+        foot.append(h('div', { class: 'muted small' }, `Next: ${res.next.label} — in ${postClock(at)}`));
+        if (!res.office && g.s.post.n <= POST.welcome.length) foot.append(this.postStrip(g.s.post.n));
+        btn.textContent = 'Lovely!';
+        state = 'open';
+      };
+      if (reduced) reveal(); else setTimeout(reveal, 600);
+    };
+    btn.addEventListener('click', () => { if (state === 'closed') open(); else if (state === 'open') back._close(); });
+    const back = this.showModal('post', modal, () => {
+      clearTimeout(this._postPopTimer);
+      if (!res) return;
+      // the tiles fly home: 🪙 → coins, 💎 → gems, goods → 📦, keepsakes → 🏆, a gold decor → 🏪
+      const els = [...tiles.children];
+      res.tiles.forEach((t, i) => {
+        const r = els[i]?.getBoundingClientRect();
+        const target = t.kind === 'coins' ? this.coinsPill : t.kind === 'gems' ? this.gemsPill : t.kind === 'item' ? this.barnBtn
+          : t.kind === 'keepsake' ? this.flyTarget(this.trophyBtn) : t.kind === 'gift' && !t.place ? this.flyTarget(this.shopBtn) : null;
+        if (!r || !r.width || !target || !this.ctrl.effects) return;
+        this.ctrl.effects.flyFrom(r.left + r.width / 2, r.top + r.height / 2, this.postTileIcon(t), target, { delay: i * 90 });
+      });
+      this.refreshPostPill();
+      this.ctrl.postClosed?.(res);
+    });
+    back._enter = () => btn.click();
+    back.addEventListener('click', (e) => { if (e.target === back && state !== 'opening') back._close(); });
+    return back;
+  }
+
+  postTileIcon(t) {
+    if (t.kind === 'coins') return '🪙';
+    if (t.kind === 'gems') return '💎';
+    if (t.kind === 'item') return ITEMS[t.item]?.icon || '📦';
+    if (t.kind === 'keepsake') return KEEPSAKES[t.id]?.icon || '🔖';
+    if (t.kind === 'gift') return OBJECTS[t.type]?.icon || '🎁';
+    return '✨';
+  }
+
+  // one reward tile of the parcel modal (a keepsake flips from a ? to the find)
+  postTile(t) {
+    const icon = this.postTileIcon(t);
+    if (t.kind === 'keepsake') {
+      const k = KEEPSAKES[t.id];
+      return h('div', { class: 'lu-item post-tile keepsake' },
+        h('span', { class: 'pt-flip' }, h('b', { class: 'pt-q' }, '?'), h('b', { class: 'pt-k' }, icon)),
+        h('small', {}, k ? k.name : 'Keepsake'), h('small', { class: 'muted' }, 'for Mabel\'s album'));
+    }
+    const label = t.kind === 'coins' ? `+${fmtNum(t.n)}` : t.kind === 'gems' ? `+${t.n}` : t.kind === 'item' ? `${t.n}× ${ITEMS[t.item]?.name || t.item}`
+      : t.kind === 'gift' ? (t.place ? `${OBJECTS[t.type].name} · put it up!` : `${OBJECTS[t.type].name} · in Shop → Decor 🎁`)
+        : t.kind === 'voucher' ? `Gilding voucher${t.n > 1 ? ` ×${t.n}` : ''}` : '';
+    return h('div', { class: 'lu-item post-tile' + (t.kind === 'gift' ? ' gift' : '') }, h('span', {}, icon), h('small', {}, label));
+  }
+
   // ---------------------------------------------------------------- 🧭 turn & tilt (§1.7)
   get rig() { return this.ctrl.world?.rig || null; }
 
@@ -812,7 +1008,7 @@ export class HUD {
     // HUD pieces at the top / bottom of the screen, as rects (Mabel's docked card marks itself data-safe-*)
     const rects = (els) => [...els].filter(isShown).map((el) => el.getBoundingClientRect()).filter((r) => r.width && r.height);
     // (the 🧭 view pad is transient and never counts)
-    const tops = rects([this.levelBoxEl, this.questCard, this.pills, this.roundBtns, this.camBtn, this.toolHint, ...document.querySelectorAll('[data-safe-top]')]);
+    const tops = rects([this.levelBoxEl, this.questCard, this.pills, this.roundBtns, this.postPill, this.camBtn, this.toolHint, ...document.querySelectorAll('[data-safe-top]')]);
     // the toolbar counts even before it is revealed, so framing doesn't jump when it appears
     const bots = [this.toolbar, this.seedBar, this.placeBar].filter((el) => el.isConnected && !el.classList.contains('hidden'))
       .map((el) => el.getBoundingClientRect()).concat(rects(document.querySelectorAll('[data-safe-bottom]')));
@@ -842,7 +1038,7 @@ export class HUD {
   // true while level-ups are being merged into one modal (it shows a moment after the first 'levelup')
   levelUpPending() { return !!this._luPending; }
 
-  // 'levelup' | 'daily' | 'chest' | 'guide' | null — the modal on top. A guide marks its own modal with data-modal="guide".
+  // 'levelup' | 'daily' | 'chest' | 'post' | 'guide' | null — the modal on top. A guide marks its own modal with data-modal="guide".
   topModalKind() {
     const m = this.topModal();
     if (m) return m.dataset.modal || 'levelup';
@@ -864,6 +1060,8 @@ export class HUD {
 
   tick() {
     this.game.ensureOrders();
+    this.game.postTick();
+    this.refreshPostPill();
     this.refreshBadges();
     this.updateQuestTimer();
     if (this.panel && this.panel.live && !this._pressing) this.refreshPanel(true);
@@ -1059,7 +1257,8 @@ export class HUD {
         onBuy: () => { this.closePanel(); this.ctrl.startPlacement(id); },
       }));
     } else if (tab === 'decor') {
-      addCards((d) => d.kind === 'decor', (id, d) => this.shopCard({ icon: d.icon, name: d.name, cost: d.cost, level: d.level, guide: 'shop:buy:' + id, onBuy: () => { this.closePanel(); this.ctrl.startPlacement(id); } }));
+      // (one-of-a-kind decorations, level 99, only ever come as gifts)
+      addCards((d) => d.kind === 'decor' && d.level < 99, (id, d) => this.shopCard({ icon: d.icon, name: d.name, cost: d.cost, level: d.level, guide: 'shop:buy:' + id, onBuy: () => { this.closePanel(); this.ctrl.startPlacement(id); } }));
       const gifts = this.renderGifts();
       if (gifts) return h('div', {}, gifts, grid, hidden.n ? h('div', { class: 'tip' }, `✨ ${hidden.n} more to discover as you level up`) : null);
     } else if (tab === 'land') {
@@ -1648,17 +1847,19 @@ export class HUD {
     return open.length ? open[open.length - 1] : null;
   }
 
-  // Esc / Enter: a modal closes the way its main button would
-  closeTopModal() {
+  // Esc / Enter: a modal closes the way its main button would (a modal with its own Enter, e.g. the parcel's
+  // Open! ✨ then Lovely!, presses that button; its Esc before opening closes it unopened)
+  closeTopModal(key = 'escape') {
     const m = this.topModal();
     if (!m) return;
+    if (key === 'enter' && m._enter) { m._enter(); return; }
     if (m._close) { m._close(); return; }
     m.classList.remove('open');
     if (m === this._luBack) this._luBack = null;
     setTimeout(() => m.remove(), 250);
   }
 
-  // shared shell of the centred modals; kind: 'levelup' | 'daily' | 'chest'
+  // shared shell of the centred modals; kind: 'levelup' | 'daily' | 'chest' | 'post'
   showModal(kind, modal, close) {
     this.closeSeedPopover();
     const back = h('div', { class: 'backdrop levelup-back', 'data-modal': kind }, modal);
@@ -1684,6 +1885,14 @@ export class HUD {
   renderToday() {
     const g = this.game;
     const wrap = h('div', { class: 'farm-panel' });
+    // the Post first: its countdown and teaser, or "A parcel is waiting! [Open]" (the two never share a modal)
+    if (this.revealed('post')) {
+      const ps = g.postStatus();
+      wrap.append(ps.ready
+        ? h('div', { class: 'upcoming post-row ready' }, h('div', { class: 'r-mid' }, '📬 A parcel is waiting!'),
+          h('button', { class: 'btn small', 'data-guide': 'today:post', onclick: () => { this.audio.play('click'); this.closePanel(true); this.showPost(); } }, 'Open'))
+        : h('div', { class: 'upcoming post-row', 'data-guide': 'today:post' }, h('div', { class: 'r-mid' }, `📪 Next parcel in ${postClock(ps.msLeft)} · Next: ${ps.teaser.label}`)));
+    }
     const st = g.dailyStatus();
     const days = h('div', { class: 'daily-days' });
     DAILY.forEach((r, i) => {
@@ -1833,9 +2042,9 @@ export class HUD {
     return null;
   }
 
-  confetti() {
+  confetti(count = 80) {
     const colors = ['#ffcf3b', '#ff6b6b', '#4dabf7', '#69db7c', '#da77f2', '#ffa94d'];
-    for (let i = 0; i < 80; i++) {
+    for (let i = 0; i < count; i++) {
       const c = h('div', { class: 'confetti' });
       c.style.left = Math.random() * 100 + 'vw';
       c.style.background = colors[i % colors.length];

@@ -39,6 +39,8 @@ npm run sim      # pacing simulator: how long each level/unlock takes, bots and 
 
 **Daily rhythm.** Every day brings a **gift calendar** and **3 daily chores** scaled to your level. The calendar never resets if you miss a day.
 
+**The Post.** Your first parcel comes 5 minutes after you start, and each next one is on its way the moment you open the last: 10 min, 15 min, 30 min, then 3 hours, then every 8 hours. One always waits for you, even while the game is closed; parcels never pile up or expire. The 📪 pill (next to 🧭) counts down and turns into 📬 *Open!*; you open each parcel yourself with a little reveal. They come from Grandma Mabel and the villagers with a note, and hold gems, keepsakes for Mabel's album, pantry goods and a little coin that grows with your level (the first coins at 4 hours), plus a 📮 **Mailbox** for your farm at 1 hour: its flag goes up when a parcel waits. Parcels never give XP or building materials. Farms from before the Post get one *Post office opening* parcel instead of the welcome ones.
+
 **Village projects** (L16+). Restore the Old Bridge, the Bandstand and the Greenhouse, and turn your farmhouse into the **Master Farmhouse**. You donate coins and goods across 3 stages, which you can watch being built, and each finished project gives a small permanent perk.
 
 **Progression and pacing** (see below).

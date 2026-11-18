@@ -648,4 +648,29 @@ function stump(seed = 0) {
   return group(gr);
 }
 
-registerBuilders({ birdbath, picnic, flowerarch, fountain, gazebo, statue, balloon, weed, stone, stump });
+// ------------------------------------------------------------------ mailbox (1x1): the flag is up while a parcel waits
+function mailbox(flag = 'down') {
+  const red = '#d9483b', redD = '#a8382f', flagC = '#f7cf3b';
+  const P = [
+    cyl(0.17, 0.21, 0.06, 8, C.stoneDark, 0, 0, 0),
+    box(0.11, 0.8, 0.11, C.woodDark, 0, 0.05, 0),
+    box(0.06, 0.06, 0.3, C.woodDark, 0, 0.62, 0.0),
+    box(0.36, 0.05, 0.54, C.wood, 0, 0.8, 0),
+    box(0.3, 0.16, 0.5, red, 0, 0.85, 0),
+    rot(cyl(0.15, 0.15, 0.5, 12, red, 0, 1.01 - 0.25, 0), Math.PI / 2, 0, 0), // rounded roof, centre y 1.01
+    box(0.3, 0.16, 0.02, redD, 0, 0.85, 0.252), // door
+    rot(cyl(0.15, 0.15, 0.02, 12, redD, 0, 1.01 - 0.01, 0.252), Math.PI / 2, 0, 0),
+    box(0.1, 0.035, 0.035, C.white, 0, 0.98, 0.27), // handle
+    box(0.012, 0.09, 0.2, C.white, -0.152, 0.9, -0.02), // a letter's edge peeking out of the side slot
+  ];
+  // the flag on the right: straight up while a parcel waits, folded down along the box otherwise
+  const arm = group(box(0.035, 0.44, 0.035, C.black, 0, 0, 0), box(0.03, 0.15, 0.2, flagC, 0, 0.29, -0.09));
+  arm.position.set(0.175, 0.86, 0.17);
+  if (flag !== 'up') arm.rotation.x = -Math.PI / 2;
+  P.push(arm);
+  // a tuft of flowers at its foot
+  P.push(at(flowerTuft(hashRand(37), [C.pink, C.yellow, C.white], 1.1), 0.24, 0, 0.22), at(flowerTuft(hashRand(38), [C.purple, C.white], 0.9), -0.22, 0, 0.26));
+  return group(P);
+}
+
+registerBuilders({ birdbath, picnic, flowerarch, fountain, gazebo, statue, balloon, weed, stone, stump, mailbox });
