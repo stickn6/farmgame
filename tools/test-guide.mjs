@@ -626,6 +626,49 @@ test('small helpers: lots, level-up "Let\'s go", tips, seed popover order', () =
   assert.deepEqual(list.map((x) => x.type).sort(), ['carrot', 'wheat']);
 });
 
+test('turn & tilt: 🧭 is revealed at the end of the tour; its keys are guide keys; tip:camera (both triggers) never in the tour or with hints off', () => {
+  for (const k of ['btn:camera', 'cam:up', 'cam:down', 'cam:left', 'cam:right', 'cam:home']) assert.ok(isGuideKey(k), k);
+  assert.ok(!isGuideKey('cam:spin'));
+  // graduation's last beat reveals 🧭 (and the post pill's slot) with 🎁 and 🏆
+  const g = fresh();
+  g.markSeen('welcome');
+  setQuest(g, 'bread');
+  setLevel(g, 4);
+  g.s.quest.progress = 1;
+  g.claimQuest();
+  for (const k of ['grad:chest', 'grad:gift', 'grad:daily']) g.markSeen(k);
+  assert.ok(!g.isRevealed('camera'), 'hidden during the tour');
+  const end = planStep(g, {});
+  assert.equal(end.key, 'grad:end');
+  for (const k of ['today', 'trophy', 'camera', 'post']) assert.ok(end.reveal.includes(k), `grad:end reveals ${k}`);
+  // tip:camera: the first pen or workshop placed after graduation, or a farm 30 minutes old
+  const c = coachedAt('carrots', 2);
+  assert.equal(pendingTip(c), null, 'a new coached farm: not yet');
+  assert.equal(pendingTip(c, { cameraTipDue: true }).key, 'tip:camera');
+  assert.ok(pendingTip(c, { cameraTipDue: true }).text.length <= 90);
+  assert.equal(typeof pendingTip(c, { cameraTipDue: true }).onTap, 'function');
+  advance(30 * 60);
+  assert.equal(pendingTip(c)?.key, 'tip:camera', '30 minutes in');
+  // level tips come first
+  setLevel(c, 5);
+  assert.equal(pendingTip(c).key, 'tip:5');
+  c.markSeen('tip:5');
+  assert.equal(pendingTip(c).key, 'tip:camera');
+  c.markSeen('tip:camera');
+  assert.equal(pendingTip(c, { cameraTipDue: true }), null, 'once');
+  // never in the guided tour, never with hints off
+  const gd = fresh();
+  assert.equal(gd.tutorialMode(), 'guided');
+  advance(31 * 60);
+  assert.equal(pendingTip(gd, { cameraTipDue: true }), null, 'guided');
+  const off = coachedAt('carrots', 2);
+  off.s.settings.hints = 'off';
+  assert.equal(pendingTip(off, { cameraTipDue: true }), null, 'hints off');
+  // the 🧭 pad taps cost the headless player nothing and change nothing
+  const sim = new SimUI(coachedAt('carrots', 2));
+  assert.equal(sim.tap('cam:up'), 0);
+});
+
 // ---------------------------------------------------------------- the guide-follower
 const SEEDS = [1, 2, 3, 4, 5];
 const runs = [];

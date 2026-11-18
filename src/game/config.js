@@ -723,6 +723,22 @@ export const FEATURE_TIPS = {
   30: 'The Master Farmhouse project is open. You\'re a true farmer, dear!',
 };
 
+// ---------------------------------------------------------------- camera (turn & tilt)
+// Yaw/pitch in radians. Turning steps along the iso diagonals; tilting has 5 levels. The camera never moves
+// on its own: tilt is only ever set by the player (zoomTilt is an optional polish, shipped off).
+export const CAMERA = {
+  yaw0: Math.PI / 4, // the default (and Home) view
+  yawStep: Math.PI / 2, // ↺ ↻ Q E: along the iso diagonals π/4 + k·π/2
+  snap: 0.12, // twist / orbit release: glide onto the nearest 45° view within 7°
+  pitch: { min: 0.66, max: 1.22, def: 0.92, steps: [0.66, 0.79, 0.92, 1.07, 1.22] }, // 37.8° 45.3° 52.7° 61.3° 69.9°
+  lowPitch: 0.80, lowMinDist: 9, // below 0.80 the closest zoom is 9 (else 7), so the camera never dips into roofs
+  twist: { engage: 0.26, maxScale: 0.22 }, // 15°, and only while |ln(d/d0)| < 0.22 (a pinch never turns)
+  armMs: 90, // touch paint waits this long for a second finger (a twist never harvests or plows)
+  padIdle: 5, longPress: 0.6, dragStart: 6, // s, s, px (the 🧭 view pad)
+  orbit: { yawPerPx: 0.010, pitchPerPx: 0.005, pitchPerWheel: 0.0015 },
+  zoomTilt: { enabled: false, per: 0.004, lo: -0.05, hi: 0.08 }, // optional polish, shipped OFF
+};
+
 // Levels where future content can slot in without rebalancing (keep these in mind when adding features).
 // Planned next: seasons & festivals (L32), bigger map (L33), fishing (L34), farm kitchen (L36),
 // pets (L38), foraging & workshop (L40). Rules of thumb: one visible unlock per level, a major

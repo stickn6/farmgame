@@ -1102,7 +1102,8 @@ export function graduationStep(game) {
     return uiStep('grad:gift', 'place:ok', { ...base, startPlacement: { type: gift, gift: true, near: fieldCentre(g) }, stepKey: 'gradGift', icon: OBJECTS[gift].icon, label: `Put up the ${OBJECTS[gift].name}` });
   }
   if (!g.hasSeen('grad:daily') && g.dailyStatus().canClaim) return uiStep('grad:daily', 'modal:daily:claim', { ...base, modal: 'daily', stepKey: 'gradDaily', icon: '🎁', label: 'Daily gift' });
-  return uiStep('grad:end', 'quest:card', { ...base, stepKey: 'gradEnd', reveal: ['today', 'trophy'], icon: '📜', label: 'Your next goal' });
+  // the goal card hands over to coached play: 🎁 🏆, 🧭 turn & tilt and the post pill appear with it
+  return uiStep('grad:end', 'quest:card', { ...base, stepKey: 'gradEnd', reveal: ['today', 'trophy', 'camera', 'post'], icon: '📜', label: 'Your next goal' });
 }
 
 // guided → coached (graduation done) → independent (scripted list done or level 10). Never backwards.
@@ -1126,10 +1127,32 @@ export function levelUpGo(game, level) {
   return !game.questDone() && questLevel(game.currentQuest()) === level;
 }
 
-// the next FEATURE_TIPS line to show ({ level, key, text }), or null
-export function pendingTip(game) {
+// One-time tips about a feature rather than a level (§7.6), walked after FEATURE_TIPS. Each runs once, only
+// outside the guided tour and with hints on, and the UI spaces them like the level tips (TIP_GAP).
+//   key: its seen flag · text: string | (game, ctx) → string · when(game, ctx) → bool
+//   onTap(guide): what tapping the toast-card does (guide = the GuideController: guide.hud, guide.ctrl, …)
+// ctx is the UI's session state (GuideController.tipCtx), e.g. cameraTipDue: a pen or workshop was placed
+// after graduation. Later features add their entries here.
+const FARM_AGE_TIP = 30 * 60000;
+export const EXTRA_TIPS = [
+  {
+    key: 'tip:camera',
+    text: 'Tip: twist two fingers to turn your farm — or tap 🧭 to turn and tilt.',
+    when: (g, ctx) => !!ctx.cameraTipDue || g.now() - (g.s.createdAt || 0) >= FARM_AGE_TIP,
+    onTap: (guide) => { guide.hud.openCamPad?.(); guide.hud.pulseCamBtn?.(); },
+  },
+];
+
+// The next one-time tip to show: a FEATURE_TIPS line ({ level, key, text }) first, then an EXTRA_TIPS entry
+// ({ key, text, onTap, extra: true }); null when none is due (or hints are off).
+export function pendingTip(game, ctx = {}) {
   if (game.s.settings?.hints === 'off') return null;
   for (let l = 1; l <= game.s.level; l++) if (FEATURE_TIPS[l] && !game.hasSeen('tip:' + l)) return { level: l, key: 'tip:' + l, text: FEATURE_TIPS[l] };
+  if (guided(game)) return null;
+  for (const t of EXTRA_TIPS) {
+    if (game.hasSeen(t.key) || !t.when(game, ctx)) continue;
+    return { key: t.key, text: typeof t.text === 'function' ? t.text(game, ctx) : t.text, onTap: t.onTap || null, extra: true };
+  }
   return null;
 }
 
@@ -1296,7 +1319,8 @@ function guidedLine(g, s) {
 
 // HUD groups a guided step needs revealed (§4 progressive reveal), minus what's already shown
 const REVEAL_OF = [[/^btn:shop|^shop:/, 'shop'], [/^btn:barn|^storage:/, 'barn'], [/^btn:orders|^order:/, 'orders'], [/^tool:/, 'tools'],
-  [/^quest:/, 'quest'], [/^level:/, 'level'], [/^pill:gems/, 'gems'], [/^btn:today|^today:/, 'today'], [/^btn:trophy/, 'trophy']];
+  [/^quest:/, 'quest'], [/^level:/, 'level'], [/^pill:gems/, 'gems'], [/^btn:today|^today:/, 'today'], [/^btn:trophy/, 'trophy'],
+  [/^btn:camera|^cam:/, 'camera']];
 
 function revealFor(g, steps) {
   if (g.revealAll()) return [];

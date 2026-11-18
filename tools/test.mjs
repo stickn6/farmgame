@@ -1119,7 +1119,7 @@ test('v2 saves: no tour, no debris, no new-farm assists; settings merged', () =>
   assert.ok(tut.seen.welcome && tut.seen['line:harvest'] && tut.seen.siloFull && tut.seen.firstDrop && tut.seen.firstVisitor);
   assert.ok(tut.seen['tip:8'] && !tut.seen['tip:9'], 'tips up to the current level');
   assert.deepEqual(g.s.gifts, []);
-  assert.deepEqual(g.s.settings, { sound: false, music: true, hints: 'glow', tapHarvest: true });
+  assert.deepEqual(g.s.settings, { sound: false, music: true, hints: 'glow', tapHarvest: true, cam: null, twist: true });
   assert.ok(g.isRevealed('trophy'));
 });
 
@@ -1157,6 +1157,172 @@ test('quest.qid heals the index when the goal list changes', () => {
     assert.equal(r2.currentQuest().count, count, 'same frozen repeat goal');
     assert.equal(r2.s.quest.progress, 4);
   } finally { CFG.QUESTS.splice(0, CFG.QUESTS.length, ...saved); }
+});
+
+// ---------------------------------------------------------------- v4: turn & tilt camera (§1)
+test('camera.js: 90° steps on the iso diagonals, tilt levels, Home, snap, twist engage, closest zoom', async () => {
+  const { stepYaw, nextPitch, homeYaw, nearestSnap, minDistFor, twistUpdate, wrapPi, isHome } = await import('../src/game/camera.js');
+  const C = CFG.CAMERA, Q = Math.PI / 4, H = Math.PI / 2, near = (a, b, eps = 1e-9) => Math.abs(a - b) < eps;
+  // Q from the default is today's +π/2; E is −π/2; every result is a diagonal π/4 + k·π/2
+  assert.ok(near(stepYaw(C.yaw0, +1), C.yaw0 + H));
+  assert.ok(near(stepYaw(C.yaw0, -1), C.yaw0 - H));
+  for (let y = -7; y <= 7; y += 0.137) {
+    for (const dir of [1, -1]) {
+      const r = stepYaw(y, dir), k = (r - Q) / H;
+      assert.ok(near(k, Math.round(k), 1e-9), `diagonal from ${y}`);
+      assert.ok(dir > 0 ? r > y + 1e-9 && r <= y + H + 0.04 : r < y - 1e-9 && r >= y - H - 0.04, `one step from ${y}`);
+    }
+  }
+  assert.ok(near(stepYaw(C.yaw0 + 0.01, +1), C.yaw0 + H), 'just off a diagonal still steps a full 90°');
+  assert.ok(near(stepYaw(C.yaw0 + 0.5, +1), C.yaw0 + H), 'between diagonals: the next one that way');
+  assert.ok(near(stepYaw(C.yaw0 + 0.5, -1), C.yaw0));
+  // tilt levels and clamps
+  assert.equal(nextPitch(0.92, +1), 1.07);
+  assert.equal(nextPitch(0.92, -1), 0.79);
+  assert.equal(nextPitch(1.22, +1), 1.22);
+  assert.equal(nextPitch(0.66, -1), 0.66);
+  assert.equal(nextPitch(0.95, -1), 0.92, 'from in between: the level below');
+  assert.equal(nextPitch(0.95, +1), 1.07);
+  assert.equal(nextPitch(0.921, +1), 1.07, 'ε: a level a hair off counts as that level');
+  let p = C.pitch.min;
+  const seen = [p];
+  for (let i = 0; i < 6; i++) seen.push(p = nextPitch(p, +1));
+  assert.deepEqual(seen, [0.66, 0.79, 0.92, 1.07, 1.22, 1.22, 1.22]);
+  // Home: the nearest default turn, never several spins
+  assert.ok(near(homeYaw(C.yaw0), C.yaw0));
+  assert.ok(near(homeYaw(C.yaw0 + 2 * Math.PI * 3 + 0.4), C.yaw0 + 2 * Math.PI * 3));
+  assert.ok(near(homeYaw(C.yaw0 + Math.PI - 0.1), C.yaw0));
+  assert.ok(near(homeYaw(C.yaw0 + Math.PI + 0.1), C.yaw0 + 2 * Math.PI));
+  assert.ok(near(homeYaw(C.yaw0 - 5), C.yaw0 - 2 * Math.PI));
+  assert.ok(isHome(C.yaw0 + 2 * Math.PI, 0.92) && !isHome(C.yaw0 + H, 0.92) && !isHome(C.yaw0, 1.07));
+  // snap within 0.12 onto 45° views
+  assert.ok(near(nearestSnap(Q + 0.11), Q));
+  assert.ok(near(nearestSnap(H - 0.1), H));
+  assert.equal(nearestSnap(Q + 0.2), null);
+  assert.ok(near(nearestSnap(-3 * Q + 0.05), -3 * Q));
+  assert.equal(minDistFor(0.66), 9);
+  assert.equal(minDistFor(0.79), 9);
+  assert.equal(minDistFor(0.80), 7);
+  assert.equal(minDistFor(0.92), 7);
+  assert.ok(near(wrapPi(3 * Math.PI), -Math.PI) && near(wrapPi(-0.5), -0.5) && near(wrapPi(7), 7 - 2 * Math.PI));
+  // twist: a pair of fingers 200 px apart turning about their middle (screen y points down)
+  const pair = (ang, d = 200) => [{ x: 200 - Math.cos(ang) * d / 2, y: 400 - Math.sin(ang) * d / 2 }, { x: 200 + Math.cos(ang) * d / 2, y: 400 + Math.sin(ang) * d / 2 }];
+  const st = () => ({ angle0: 0, dist0: 200, yaw0: 1, engaged: false, offset: 0 });
+  let t1 = st();
+  for (let a = 0; a < 0.255; a += 0.01) assert.equal(twistUpdate(t1, ...pair(a)).engaged, false, 'below 15° nothing turns');
+  let r = twistUpdate(t1, ...pair(0.27));
+  assert.ok(r.engaged, 'engages past 15°');
+  assert.ok(Math.abs(r.yaw - 1) < 0.02, 'no jump at engagement');
+  r = twistUpdate(t1, ...pair(0.27 + 0.5));
+  assert.ok(near(r.yaw - 1, 0.27 + 0.5 - 0.26, 1e-6), '1:1 after engaging; fingers clockwise → yaw grows');
+  r = twistUpdate(t1, ...pair(0.1, 300));
+  assert.ok(r.engaged && near(r.yaw - 1, 0.1 - 0.26, 1e-6), 'stays engaged (and zoom may change) once it turned');
+  // counter-clockwise, and a pinch that also rotates never turns
+  t1 = st();
+  r = twistUpdate(t1, ...pair(-0.4));
+  assert.ok(r.engaged && near(r.yaw - 1, -(0.4 - 0.26), 1e-6));
+  t1 = st();
+  assert.equal(twistUpdate(t1, ...pair(0.5, 200 * Math.exp(0.23))).engaged, false, 'pinching out while turning');
+  assert.equal(twistUpdate(t1, ...pair(0.5, 200 * Math.exp(-0.25))).engaged, false, 'pinching in while turning');
+  assert.equal(twistUpdate(t1, ...pair(0.5, 200 * Math.exp(0.2))).engaged, true, 'a small scale change is fine');
+  // past 180° it keeps going instead of wrapping
+  t1 = st();
+  let last = null;
+  for (let a = 0; a <= 4; a += 0.05) last = twistUpdate(t1, ...pair(a));
+  assert.ok(near(last.yaw - 1, 4 - 0.26, 1e-6), 'a full spin and more');
+});
+
+test('CameraRig: locked rig ignores every turn/tilt path; low tilt keeps out of the roofs; reduced motion snaps; frame() takes opts.pitch', async () => {
+  const THREE = await import('three');
+  const { CameraRig, World } = await import('../src/game/world.js');
+  const C = CFG.CAMERA;
+  const rig = new CameraRig(new THREE.PerspectiveCamera(50, 390 / 844, 0.5, 300));
+  let views = 0;
+  rig.onView = () => views++;
+  assert.equal(rig.yaw, C.yaw0);
+  assert.equal(rig.goal.pitch, C.pitch.def);
+  rig.locked = true;
+  const before = JSON.stringify({ y: rig.yaw, p: rig.pitch, gy: rig.goal.yaw, gp: rig.goal.pitch, d: rig.goal.dist });
+  rig.rotateStep(1); rig.rotateStep(-1); rig.tiltStep(1); rig.tiltStep(-1); rig.twistTo(3); rig.orbitBy(50, 40); rig.home(); rig.setPitch(0.7); rig.snapYaw();
+  assert.equal(JSON.stringify({ y: rig.yaw, p: rig.pitch, gy: rig.goal.yaw, gp: rig.goal.pitch, d: rig.goal.dist }), before, 'locked: nothing moved');
+  assert.equal(views, 0);
+  rig.locked = false;
+  rig.rotateStep(1);
+  assert.ok(Math.abs(rig.goal.yaw - (C.yaw0 + Math.PI / 2)) < 1e-9);
+  assert.equal(views, 1);
+  // tilt down to the lowest level: the closest zoom becomes 9
+  rig.setDist(7);
+  rig.tiltStep(-1);
+  assert.equal(rig.goal.pitch, 0.79);
+  assert.ok(rig.goal.dist >= 9, 'goal.dist raised');
+  rig.zoomBy(0.1);
+  assert.ok(rig.goal.dist >= 9, 'and zooming in stops at 9');
+  rig.setDist(3);
+  assert.ok(rig.dist >= 9);
+  rig.tiltStep(+1);
+  rig.setDist(3);
+  assert.equal(rig.dist, 7, 'back at 0.92 the closest zoom is 7 again');
+  // the goal lerps; update() eases yaw and pitch together
+  rig.tiltStep(+1);
+  assert.equal(rig.goal.pitch, 1.07);
+  assert.notEqual(rig.pitch, 1.07);
+  for (let i = 0; i < 60; i++) rig.update(1 / 30);
+  assert.ok(Math.abs(rig.pitch - 1.07) < 1e-3 && Math.abs(rig.yaw - rig.goal.yaw) < 1e-3);
+  // orbit: 1:1, clamped tilt; snap after
+  rig.orbitBy(-10, 1000);
+  assert.equal(rig.goal.pitch, C.pitch.max);
+  assert.equal(rig.pitch, C.pitch.max, 'orbit is instant');
+  rig.snapYaw();
+  assert.ok(Math.abs(rig.goal.yaw - (C.yaw0 + Math.PI / 2)) < 1e-9, '0.1 rad off a diagonal snaps back');
+  rig.home();
+  assert.equal(rig.goal.pitch, C.pitch.def);
+  assert.ok(Math.abs(rig.goal.yaw - C.yaw0) < 1e-9 || Math.abs(rig.goal.yaw - C.yaw0 - 2 * Math.PI) < 1e-9);
+  // reduced motion: turn / tilt / Home land at once
+  rig.reducedMotion = () => true;
+  rig.rotateStep(-1);
+  assert.equal(rig.yaw, rig.goal.yaw);
+  rig.tiltStep(-1);
+  assert.equal(rig.pitch, rig.goal.pitch);
+  rig.home();
+  assert.equal(rig.yaw, rig.goal.yaw);
+  assert.equal(rig.pitch, C.pitch.def);
+  rig.reducedMotion = () => false;
+
+  // World.frame through a stub world (no WebGL): the solve uses opts.pitch, which becomes the tilt goal
+  const hadWindow = 'window' in globalThis;
+  const oldWindow = globalThis.window;
+  globalThis.window = { innerWidth: 390, innerHeight: 844 };
+  try {
+    const cam = new THREE.PerspectiveCamera(50, 390 / 844, 0.5, 300);
+    const w = Object.create(World.prototype);
+    Object.assign(w, { camera: cam, rig: new CameraRig(cam), scratchCam: new THREE.PerspectiveCamera(), prefersReducedMotion: false });
+    const pts = [new THREE.Vector3(3, 0.3, 2), new THREE.Vector3(5, 0.3, 2), new THREE.Vector3(3, 0.3, 4), new THREE.Vector3(5, 0.3, 4)];
+    const safe = { left: 12, top: 140, right: 378, bottom: 740 };
+    w.rig.tiltStep(+1); w.rig.tiltStep(+1); // the player tilted up to 1.22
+    let r = w.frame(pts, { safe, minDist: 8, instant: true });
+    assert.equal(w.rig.goal.pitch, 1.22, 'framing keeps the player\'s tilt');
+    assert.ok(r.fits && w.inSafe(pts, safe), 'fits at their tilt');
+    r = w.frame(pts, { safe, minDist: 8, instant: true, pitch: 0.66 });
+    assert.equal(w.rig.goal.pitch, 0.66);
+    assert.equal(w.rig.pitch, 0.66, 'instant: the tilt lands too');
+    assert.ok(r.dist >= 9, 'the solve starts at the low tilt\'s closest zoom');
+    assert.ok(r.fits && w.inSafe(pts, safe), 'fits at the asked tilt');
+    w.frame(pts, { safe, pitch: C.pitch.def });
+    assert.equal(w.rig.goal.pitch, C.pitch.def, 'a gliding frame sets the goal and lets the rig ease there');
+  } finally { if (hadWindow) globalThis.window = oldWindow; else delete globalThis.window; }
+});
+
+test('settings: the camera view and two-finger turn are saved; new farms default to Home and on', () => {
+  const st = new MemStorage();
+  const g = fresh(st);
+  assert.equal(g.s.settings.cam, null);
+  assert.equal(g.s.settings.twist, true);
+  g.s.settings.cam = { yaw: 2.3562, pitch: 1.07 };
+  g.s.settings.twist = false;
+  g.save();
+  const g2 = fresh(st);
+  assert.deepEqual(g2.s.settings.cam, { yaw: 2.3562, pitch: 1.07 });
+  assert.equal(g2.s.settings.twist, false);
 });
 
 let pass = 0, fail = 0;

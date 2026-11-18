@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import './style.css';
-import { ITEMS, CROPS, ANIMALS, OBJECTS, STORAGE, PROJECTS, TUTORIAL } from './game/config.js';
+import { ITEMS, CROPS, ANIMALS, OBJECTS, STORAGE, PROJECTS, TUTORIAL, CAMERA } from './game/config.js';
+import { isHome } from './game/camera.js';
 import { Game } from './game/state.js';
 import { seedList, plantCap, placementSpot } from './game/guide.js';
 import { farmCore } from './game/layout.js';
@@ -28,6 +29,7 @@ class Controller {
     this.audio.setMusic(st.music);
 
     this.world = new World(document.getElementById('scene'));
+    this.restoreView();
     this.world.drawGround(this.game.landLo(), this.game.landHi());
     this.farm = new FarmView(this.world.scene, this.game);
     this.objects = new ObjectView(this.world.scene, this.game);
@@ -58,6 +60,9 @@ class Controller {
       onKey: (e) => this.onKey(e),
       onAnyDown: () => this.audio.unlock(),
     });
+    // a hard beat dims 🧭 and closes its pad; any turn / tilt is remembered (pan and zoom are not)
+    this.input.onLockChange = (locked) => this.hud.camLocked(locked);
+    this.world.rig.onView = () => this.viewChanged();
     // Grandma Mabel: tutorial, Show me, hints (presentation only; it also sets the HUD reveal)
     this.guide = new GuideController(this);
 
@@ -101,6 +106,43 @@ class Controller {
     document.addEventListener('visibilitychange', () => { if (document.hidden) this.game.save(); });
     window.addEventListener('pagehide', () => this.game.save());
     this.loop();
+  }
+
+  // ------------------------------------------------------------------ camera: turn & tilt (§1)
+  // The remembered view (settings.cam: yaw + tilt) comes back on load, except in the guided tour, whose
+  // opening shot and hard beats assume the default view.
+  restoreView() {
+    const g = this.game, cam = g.s.settings.cam, rig = this.world.rig;
+    if (!cam || g.tutorialMode() === 'guided') return;
+    const { min, max } = CAMERA.pitch;
+    if (Number.isFinite(cam.yaw)) rig.yaw = rig.goal.yaw = cam.yaw;
+    if (Number.isFinite(cam.pitch)) rig.pitch = rig.goal.pitch = Math.min(max, Math.max(min, cam.pitch));
+    rig.goal.dist = rig.dist = Math.max(rig.dist, rig.minDistFor());
+    rig.apply();
+  }
+
+  // after a turn / tilt button, a twist or orbit, or Home: remember the view (null at Home) and update 🧭
+  viewChanged() {
+    const g = this.game, rig = this.world.rig;
+    const TAU = Math.PI * 2;
+    const yaw = ((rig.goal.yaw % TAU) + TAU) % TAU;
+    g.s.settings.cam = isHome(rig.goal.yaw, rig.goal.pitch) ? null : { yaw: +yaw.toFixed(4), pitch: Math.round(rig.goal.pitch * 100) / 100 };
+    g.saveSoon();
+    this.hud.updateCompass(true);
+    this.hud.closeSeedPopover(); // it points at a tile that just moved
+  }
+
+  // 🧭 Home / C / long-press 🧭 / Settings → Reset view: the default turn and tilt over the farm's core
+  camHome() {
+    const rig = this.world.rig;
+    if (rig.locked) return false;
+    rig.home();
+    const [cx, cz] = farmCore(this.game);
+    const to = tileToWorld(cx, cz);
+    if (this.world.prefersReducedMotion) { rig.stopGlide(); rig.velocity.set(0, 0, 0); rig.target.copy(to); rig.setDist(20); }
+    else rig.glide(to, 20, 0.6);
+    this.viewChanged();
+    return true;
   }
 
   // ------------------------------------------------------------------ tools
@@ -306,9 +348,18 @@ class Controller {
     const k = e.key.toLowerCase();
     const modal = this.hud.topModal();
     if (modal) { if (k === 'escape' || k === 'enter') this.hud.closeTopModal(); return; }
+    if (k === 'escape' && this.hud.camPadOpen()) { this.hud.closeCamPad(); return; }
     if (k === 'escape') { if (this.hud.panel) this.hud.closePanel(); else if (this.placing) this.cancelPlacement(); else this.setTool('hand'); }
-    if (k === 'q') this.world.rig.rotateBy(Math.PI / 2);
-    if (k === 'e') this.world.rig.rotateBy(-Math.PI / 2);
+    // turn (90°), tilt and Home: no-ops while a hard beat holds the camera
+    if (!e.ctrlKey && !e.metaKey && !e.altKey) {
+      const rig = this.world.rig;
+      if (k === 'q') rig.rotateStep(+1);
+      if (k === 'e') rig.rotateStep(-1);
+      if (k === 'x' || k === 'pageup') rig.tiltStep(+1);
+      if (k === 'z' || k === 'pagedown') rig.tiltStep(-1);
+      if (k === 'c' || k === 'home') this.camHome();
+      if (k === 'pageup' || k === 'pagedown' || k === 'home') e.preventDefault();
+    }
     if (this.hud.panel) return;
     if (k === 'r' && this.placing) this.rotatePlacement();
     if (k === 'enter' && this.placing) this.confirmPlacement();
@@ -817,8 +868,10 @@ class Controller {
     const nowT = performance.now();
     const dt = Math.min(0.05, (nowT - this.lastT) / 1000);
     this.lastT = nowT;
+    this.input.twistEnabled = this.game.s.settings.twist !== false && this.hud.revealed('camera');
     this.input.update(dt);
     this.world.rig.update(dt);
+    this.hud.updateCompass();
     const t = (((Date.now() - this.game.s.createdAt) / DAY_MS) + 0.05) % 1;
     this.world.updateDayCycle(t);
     this.world.updateEnvironment(dt);

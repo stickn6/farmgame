@@ -1,9 +1,14 @@
 // Unified mouse / touch / keyboard input.
-//  - one finger / left mouse: either "paint" (tools, swipe-harvest) or "pan" (decided by controller)
-//  - two fingers: pinch zoom + pan; mouse wheel: zoom; right/middle drag: pan
-//  - keyboard: WASD/arrows pan, Q/E rotate, +/- zoom
-//  - cameraLocked (guide hard beats): pan / pinch / wheel / key moves do nothing; taps and paint still work
+//  - one finger / left mouse: either "paint" (tools, swipe-harvest, moving a ghost) or "pan" (decided by controller).
+//    A touch paint waits CAMERA.armMs for a second finger before it starts (moving or lifting starts it at once),
+//    so a two-finger gesture never harvests, plows, plants, clears or moves a ghost.
+//  - two fingers: pinch zoom + pan, and (once twistEnabled) a twist turns the farm about the fingers
+//  - mouse: wheel zoom, Shift+wheel tilt, right-drag pan, middle-drag or Ctrl/⌘+left-drag orbit (turn + tilt)
+//  - keyboard: WASD/arrows pan, +/- zoom (turn / tilt / Home keys live in main.js onKey)
+//  - cameraLocked (guide hard beats): pan / pinch / twist / orbit / wheel / key moves do nothing; taps and paint still work
 import * as THREE from 'three';
+import { CAMERA } from './config.js';
+import { twistUpdate } from './camera.js';
 
 const TAP_SLOP = 9;
 
@@ -20,12 +25,15 @@ export class Input {
     this.tmp = new THREE.Vector3();
     this.lastMoveT = 0;
     this._locked = false;
+    this.armTimer = null;
+    this.twistEnabled = false; // main.js, every frame: the setting is on and 🧭 has been revealed
+    this.onLockChange = null; // (locked) the HUD dims 🧭 and closes its pad
 
     canvas.addEventListener('pointerdown', (e) => this.down(e));
     window.addEventListener('pointermove', (e) => this.move(e));
     window.addEventListener('pointerup', (e) => this.up(e));
     window.addEventListener('pointercancel', (e) => this.up(e, true));
-    canvas.addEventListener('wheel', (e) => { e.preventDefault(); if (!this._locked) this.rig.zoomBy(Math.pow(1.0015, e.deltaY)); }, { passive: false });
+    canvas.addEventListener('wheel', (e) => this.wheel(e), { passive: false });
     canvas.addEventListener('contextmenu', (e) => e.preventDefault());
     window.addEventListener('keydown', (e) => {
       if (e.target.tagName === 'INPUT') return;
@@ -39,9 +47,25 @@ export class Input {
   // While locked the player can't move the camera (World.frame still can). Also stops any drift.
   get cameraLocked() { return this._locked; }
   set cameraLocked(v) {
+    const was = this._locked;
     this._locked = !!v;
     this.rig.locked = this._locked;
     if (this._locked) { this.rig.velocity.set(0, 0, 0); if (this.panVel) this.panVel.set(0, 0, 0); }
+    if (was !== this._locked) this.onLockChange?.(this._locked);
+  }
+
+  wheel(e) {
+    e.preventDefault();
+    if (this._locked) return;
+    if (e.shiftKey) {
+      // Shift+wheel tilts (some browsers turn a shifted wheel into a sideways scroll)
+      const d = e.deltaY || e.deltaX;
+      this.rig.setPitch(this.rig.goal.pitch + d * CAMERA.orbit.pitchPerWheel);
+      clearTimeout(this.tiltSaveTimer);
+      this.tiltSaveTimer = setTimeout(() => this.rig.onView?.(), 250);
+      return;
+    }
+    this.rig.zoomBy(Math.pow(1.0015, e.deltaY));
   }
 
   startPan(x, y) {
@@ -70,18 +94,54 @@ export class Input {
     this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, sx: e.clientX, sy: e.clientY });
     this.h.onAnyDown && this.h.onAnyDown(e);
     if (this.pointers.size === 1) {
-      const isMouseAlt = e.pointerType === 'mouse' && e.button !== 0;
-      const mode = isMouseAlt ? 'pan' : this.h.decide(e);
-      this.gesture = { mode, id: e.pointerId, moved: false, sx: e.clientX, sy: e.clientY, t: performance.now() };
+      const mouse = e.pointerType === 'mouse';
+      // middle button, or Ctrl/⌘ + left: orbit; right button: pan
+      const orbit = mouse && (e.button === 1 || (e.button === 0 && (e.ctrlKey || e.metaKey)));
+      const mode = orbit ? 'orbit' : mouse && e.button !== 0 ? 'pan' : this.h.decide(e);
+      const g = { mode, id: e.pointerId, moved: false, sx: e.clientX, sy: e.clientY, lx: e.clientX, ly: e.clientY, t: performance.now(), armed: true };
+      this.gesture = g;
       if (mode === 'pan') this.startPan(e.clientX, e.clientY);
-      else this.h.onPaint(e, true);
+      else if (mode === 'paint') {
+        if (e.pointerType === 'touch') {
+          // paint arming: wait for a possible second finger (a timer, not update(), which pauses while locked)
+          g.armed = false;
+          g.pending = { clientX: e.clientX, clientY: e.clientY, pointerId: e.pointerId, pointerType: e.pointerType };
+          clearTimeout(this.armTimer);
+          this.armTimer = setTimeout(() => { if (this.gesture === g) this.arm(); }, CAMERA.armMs);
+        } else this.h.onPaint(e, true);
+      }
     } else if (this.pointers.size === 2) {
-      if (this.gesture && this.gesture.mode === 'paint') this.h.onPaintEnd && this.h.onPaintEnd(true);
+      const g = this.gesture;
+      if (g && g.mode === 'paint') {
+        // an unarmed paint is dropped without a trace (no onPaint, no onPaintEnd); an armed one ends cancelled
+        if (!g.armed) this.disarm();
+        else this.h.onPaintEnd && this.h.onPaintEnd(true);
+      }
       const [a, b] = [...this.pointers.values()];
       const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
-      this.gesture = { mode: 'pinch', startDist: Math.hypot(a.x - b.x, a.y - b.y), startCam: this.rig.dist, moved: true };
+      const dist = Math.hypot(a.x - b.x, a.y - b.y);
+      this.gesture = {
+        mode: 'pinch', startDist: dist, startCam: this.rig.dist, moved: true,
+        twist: { angle0: Math.atan2(b.y - a.y, b.x - a.x), dist0: dist, yaw0: this.rig.goal.yaw, engaged: false, offset: 0 },
+      };
       this.startPan(mx, my);
     }
+  }
+
+  // the pending touch paint starts (its timer ran out, the finger moved or lifted)
+  arm() {
+    clearTimeout(this.armTimer);
+    this.armTimer = null;
+    const g = this.gesture;
+    if (!g || g.mode !== 'paint' || g.armed) return;
+    g.armed = true;
+    this.h.onPaint(g.pending, true);
+  }
+
+  disarm() {
+    clearTimeout(this.armTimer);
+    this.armTimer = null;
+    if (this.gesture && this.gesture.mode === 'paint') this.gesture.pending = null;
   }
 
   move(e) {
@@ -96,6 +156,11 @@ export class Input {
     if (g.mode === 'pinch' && this.pointers.size >= 2) {
       if (this._locked) return;
       const [a, b] = [...this.pointers.values()];
+      // the twist turns the farm about the point between the fingers: doPan below re-anchors the grabbed ground there
+      if (this.twistEnabled && g.twist) {
+        const r = twistUpdate(g.twist, a, b);
+        if (r.engaged) this.rig.twistTo(r.yaw);
+      }
       const d = Math.hypot(a.x - b.x, a.y - b.y);
       this.rig.setDist(g.startCam * (g.startDist / Math.max(20, d)));
       this.rig.goal.dist = this.rig.dist;
@@ -105,7 +170,16 @@ export class Input {
     if (e.pointerId !== g.id) return;
     if (!g.moved && Math.hypot(e.clientX - g.sx, e.clientY - g.sy) > TAP_SLOP) g.moved = true;
     if (g.mode === 'pan') { if (g.moved) this.doPan(e.clientX, e.clientY); }
-    else if (g.mode === 'paint') this.h.onPaint(e, false);
+    else if (g.mode === 'orbit') {
+      if (g.moved && !this._locked) this.rig.orbitBy(e.clientX - g.lx, e.clientY - g.ly);
+      if (g.moved) { g.lx = e.clientX; g.ly = e.clientY; }
+    } else if (g.mode === 'paint') {
+      if (!g.armed) {
+        if (!g.moved) return; // still a possible tap or the start of a two-finger gesture
+        this.arm();
+      }
+      this.h.onPaint(e, false);
+    }
   }
 
   up(e, cancelled = false) {
@@ -114,6 +188,11 @@ export class Input {
     const g = this.gesture;
     if (!g) return;
     if (g.mode === 'pinch') {
+      if (this.pointers.size <= 1 && g.twist?.engaged) {
+        g.twist.engaged = false;
+        this.rig.snapYaw();
+        this.rig.onView?.();
+      }
       if (this.pointers.size === 1) {
         // continue panning with the remaining finger, never treat as tap
         const [id, p] = [...this.pointers.entries()][0];
@@ -126,7 +205,14 @@ export class Input {
     if (g.mode === 'pan') {
       if (!g.moved && !cancelled) this.h.onTap(e);
       else if (!this._locked && this.panVel && performance.now() - this.lastMoveT < 80) this.rig.velocity.copy(this.panVel);
+    } else if (g.mode === 'orbit') {
+      if (g.moved) { this.rig.snapYaw(); this.rig.onView?.(); }
     } else if (g.mode === 'paint') {
+      if (!g.armed) {
+        // a quick tap: it still harvests (or tap-harvests its patch); a cancelled touch never painted
+        if (cancelled) { this.disarm(); this.gesture = null; return; }
+        this.arm();
+      }
       this.h.onPaintEnd && this.h.onPaintEnd(cancelled, e, g.moved);
     }
     this.gesture = null;

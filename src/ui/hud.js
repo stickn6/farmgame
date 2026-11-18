@@ -4,8 +4,9 @@
 import * as CONFIG from '../game/config.js';
 import {
   ITEMS, CROPS, ANIMALS, OBJECTS, RECIPES, STORAGE, ACHIEVEMENTS, DAILY, VISITORS, MASTERY, PLOTS,
-  CHORES, WAGON, PROJECTS, xpForLevel, unlocksAtLevel, nextUnlockLevel,
+  CHORES, WAGON, PROJECTS, CAMERA, xpForLevel, unlocksAtLevel, nextUnlockLevel,
 } from '../game/config.js';
+import { isHome } from '../game/camera.js';
 
 // What a guide layer can plug into. All optional: with these defaults the game is fully playable unguided.
 const DEFAULT_HOOKS = {
@@ -57,6 +58,20 @@ export function fmtClock(sec) {
 }
 
 const fmtNum = (n) => n.toLocaleString('en-US');
+
+// inline-SVG icons of the 🧭 button and its view pad (not emoji: 🏠 is the Shop's Buildings tab, ⟳ the ghost's rotate)
+const svg = (body, size = 18) => `<svg viewBox="0 0 24 24" width="${size}" height="${size}" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">${body}</svg>`;
+const TURN = '<path d="M13.2 18.9 A7 7 0 1 0 6.6 7.5"/><path d="M10.4 7.5 L6 8.3 L6 3.8"/>';
+const CAM_ICONS = {
+  up: svg('<path d="M12 5 L20 17 H4 Z" fill="currentColor" stroke-width="1.5"/>'),
+  down: svg('<path d="M12 19 L20 7 H4 Z" fill="currentColor" stroke-width="1.5"/>'),
+  left: svg(TURN),
+  right: svg(`<g transform="translate(24 0) scale(-1 1)">${TURN}</g>`),
+  home: svg('<circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2.4" fill="currentColor" stroke="none"/><path d="M12 1.5 V4.5 M12 19.5 V22.5 M1.5 12 H4.5 M19.5 12 H22.5"/>'),
+};
+// the compass needle (it turns with the view: ↺ turns it counter-clockwise)
+const NEEDLE = `<svg viewBox="-12 -12 24 24" width="24" height="24" aria-hidden="true"><circle r="10.6" fill="#fffdf6" stroke="#d6c39b" stroke-width="1.4"/>
+  <g class="cam-needle"><path d="M0 -9.2 L3.3 0 L-3.3 0 Z" fill="#e5554a"/><path d="M0 9.2 L3.3 0 L-3.3 0 Z" fill="#8a6a4a"/></g><circle r="1.5" fill="#fff" stroke="#8a6a4a" stroke-width=".8"/></svg>`;
 const stars = (n, max = 3) => '★'.repeat(n) + '☆'.repeat(Math.max(0, max - n));
 const giftType = (gf) => (typeof gf === 'string' ? gf : gf?.type);
 // visible on screen: attached, not display:none and not inside a not-yet-revealed group
@@ -89,7 +104,11 @@ export class HUD {
     try { return this.hooks[name](...args); } catch (e) { console.error(`hud hook ${name}:`, e); return undefined; }
   }
 
-  uiChanged(reason) { this.hook('onUiChange', reason); }
+  uiChanged(reason) {
+    // a panel, modal or placement takes over the screen: the view pad gives way
+    if (reason === 'panel' || reason === 'modal' || reason === 'placement') this.closeCamPad();
+    this.hook('onUiChange', reason);
+  }
 
   // Fly-to targets: hidden HUD groups hand their "fly here" role to the quest card or the coin pill.
   get barnBtn() { return this.flyTarget(this.barnBtnEl); }
@@ -149,10 +168,18 @@ export class HUD {
 
     this.pills = h('div', { class: 'pills' }, this.coinsPill, this.gemsPillEl);
     this.roundBtns = h('div', { class: 'round-btns' }, this.dailyBtn, this.trophyBtn, this.settingsBtn);
+    // row 3: 🧭 turn & tilt (tap: the view pad · hold: Home · drag: orbit); the post pill goes on its left
+    this.camDot = h('span', { class: 'cam-dot hidden' });
+    this.camBtn = h('button', { class: 'round-btn cam-btn', title: 'Turn & tilt the view (Q/E · Z/X · C)', 'aria-label': 'Turn and tilt the view', 'aria-expanded': 'false',
+      'data-guide': 'btn:camera', 'data-reveal': 'camera', html: NEEDLE }, this.camDot);
+    this.camNeedle = this.camBtn.querySelector('.cam-needle');
+    this.row3 = h('div', { class: 'row3' }, this.camBtn);
     this.topBar = h('div', { class: 'top-bar' },
       h('div', { class: 'top-left' }, this.levelBoxEl, this.questCard),
-      h('div', { class: 'top-right' }, this.pills, this.roundBtns),
+      h('div', { class: 'top-right' }, this.pills, this.roundBtns, this.row3),
     );
+    this.camPad = this.buildCamPad();
+    this.bindCamBtn();
 
     // tool bar
     const tool = (id, icon, label, key) => h('button', { class: 'tool', 'data-tool': id, 'data-guide': 'tool:' + id, onclick: () => { this.audio.play('click'); this.ctrl.setTool(id); } },
@@ -185,9 +212,11 @@ export class HUD {
     this.modalLayer.addEventListener('pointerdown', () => { this._pressing = true; }, true);
     window.addEventListener('pointerup', () => setTimeout(() => { this._pressing = false; }, 0), true);
     window.addEventListener('pointercancel', () => { this._pressing = false; }, true);
-    window.addEventListener('resize', () => { this.closeSeedPopover(); this.layoutTop(); });
+    window.addEventListener('resize', () => { this.closeSeedPopover(); this.closeCamPad(); this.layoutTop(); });
+    // any touch on the farm closes the view pad (capture, no preventDefault: the farm still gets it)
+    document.getElementById('scene')?.addEventListener('pointerdown', () => this.closeCamPad(), true);
 
-    this.root.append(this.topBar, this.toolHint, this.seedBar, this.placeBar, this.toolbar, this.toasts, this.modalLayer, this.fx);
+    this.root.append(this.topBar, this.toolHint, this.seedBar, this.placeBar, this.toolbar, this.camPad, this.toasts, this.modalLayer, this.fx);
     this.revealEls = [...this.root.querySelectorAll('[data-reveal]')];
   }
 
@@ -394,7 +423,7 @@ export class HUD {
   }
 
   // ---------------------------------------------------------------- progressive reveal
-  // keys: quest, barn, level, gems, orders, shop, tools, today, trophy ('all' = everything).
+  // keys: quest, barn, level, gems, orders, shop, tools, today, trophy, camera (🧭), post ('all' = everything).
   // Hidden groups keep their layout slot (top bar) or collapse (toolbar), and pop in when revealed.
   setReveal(keys) {
     const all = keys == null || keys === 'all';
@@ -425,6 +454,7 @@ export class HUD {
       changed = true;
       el.classList.toggle('hud-hidden', !show);
       if (show) this.popIn(el);
+      if (show && el === this.camBtn) setTimeout(() => this.pulseCamBtn(), 550); // after its pop-in
     }
     // a toolbar with nothing revealed hides its frame too (it keeps its height for safeRect)
     const anyTool = this.revealEls.some((el) => this.toolbar.contains(el) && !el.classList.contains('hud-hidden'));
@@ -432,7 +462,11 @@ export class HUD {
       this.toolbar.classList.toggle('hud-hidden', !anyTool);
       if (anyTool) this.popIn(this.toolbar);
     }
-    if (changed) { this.layoutTop(); this.uiChanged('reveal'); }
+    if (changed) {
+      this.layoutTop();
+      if (!this.ctrl.placing) this.refreshToolHint(); // "two fingers to move or turn" once 🧭 is out
+      this.uiChanged('reveal');
+    }
   }
 
   popIn(el) {
@@ -459,7 +493,8 @@ export class HUD {
       remove: 'Tap soil, decorations or old trees to clear them',
     };
     const touch = matchMedia('(pointer: coarse)').matches;
-    const extra = touch ? ' · two fingers to move' : ' · right-drag / WASD to move';
+    const twist = this.game.s.settings.twist !== false && this.revealed('camera');
+    const extra = touch ? (twist ? ' · two fingers to move or turn' : ' · two fingers to move') : ' · right-drag / WASD to move';
     this.toolHint.textContent = hints[tool] ? hints[tool] + extra : '';
     this.toolHint.classList.toggle('hidden', !hints[tool]);
   }
@@ -600,6 +635,175 @@ export class HUD {
   // { x, z } of the tile the open popover belongs to, or null
   seedPopoverOpen() { return this.seedPop ? { x: this.seedPop.x, z: this.seedPop.z } : null; }
 
+  // ---------------------------------------------------------------- 🧭 turn & tilt (§1.7)
+  get rig() { return this.ctrl.world?.rig || null; }
+
+  buildCamPad() {
+    const cell = (dir, label, aria, key, act) => h('button', {
+      class: 'cam-cell', 'data-guide': 'cam:' + dir, 'data-dir': dir, 'aria-label': aria, title: `${aria} (${key})`,
+      onclick: () => this.camPadPress(dir, act),
+    }, h('span', { class: 'cam-ico', html: CAM_ICONS[dir] }), h('span', { class: 'cam-lbl' }, label));
+    this.camCells = {
+      up: cell('up', 'Top', 'Higher view', 'X', () => this.rig.tiltStep(+1)),
+      left: cell('left', 'Left', 'Turn left', 'Q', () => this.rig.rotateStep(+1)),
+      home: cell('home', 'Home', 'Home view', 'C', () => this.ctrl.camHome()),
+      right: cell('right', 'Right', 'Turn right', 'E', () => this.rig.rotateStep(-1)),
+      down: cell('down', 'Side', 'Lower view', 'Z', () => this.rig.tiltStep(-1)),
+    };
+    const c = this.camCells, gap = () => h('span', { class: 'cam-gap' });
+    const pad = h('div', { class: 'cam-pad hidden', role: 'group', 'aria-label': 'View' }, gap(), c.up, gap(), c.left, c.home, c.right, gap(), c.down, gap());
+    // a press inside the pad is never a press on the farm behind it
+    pad.addEventListener('pointerdown', (e) => e.stopPropagation());
+    return pad;
+  }
+
+  // 🧭: tap opens / closes the pad, a 0.6 s hold goes Home, a drag past 6 px orbits (turn + tilt)
+  bindCamBtn() {
+    const b = this.camBtn;
+    let st = null;
+    b.addEventListener('pointerdown', (e) => {
+      if (e.button) return;
+      b.setPointerCapture?.(e.pointerId);
+      const cur = { id: e.pointerId, x: e.clientX, y: e.clientY, lx: e.clientX, ly: e.clientY, drag: false, long: false };
+      cur.timer = setTimeout(() => { if (st === cur && !cur.drag) { cur.long = true; this.camLongPress(); } }, CAMERA.longPress * 1000);
+      st = cur;
+    });
+    b.addEventListener('pointermove', (e) => {
+      if (!st || e.pointerId !== st.id || st.long) return;
+      if (!st.drag && Math.hypot(e.clientX - st.x, e.clientY - st.y) > CAMERA.dragStart) {
+        st.drag = true;
+        clearTimeout(st.timer);
+        this.closeCamPad();
+      }
+      if (st.drag) {
+        this.rig?.orbitBy(e.clientX - st.lx, e.clientY - st.ly);
+        st.lx = e.clientX; st.ly = e.clientY;
+      }
+    });
+    const end = (e, cancelled) => {
+      if (!st || e.pointerId !== st.id) return;
+      const s0 = st;
+      st = null;
+      clearTimeout(s0.timer);
+      this._camUpAt = performance.now();
+      if (s0.drag) { this.rig?.snapYaw(); this.rig?.onView?.(); } else if (!s0.long && !cancelled) this.camTap();
+    };
+    b.addEventListener('pointerup', (e) => end(e, false));
+    b.addEventListener('pointercancel', (e) => end(e, true));
+    // the click after a press was handled on pointerup; a keyboard click (Enter / Space) toggles the pad
+    b.addEventListener('click', () => { if (performance.now() - (this._camUpAt || 0) > 600) this.camTap(); });
+    b.addEventListener('contextmenu', (e) => e.preventDefault());
+  }
+
+  camTap() {
+    if (this.rig?.locked) return;
+    this.audio.play('click');
+    if (this.camPadOpen()) this.closeCamPad(); else this.openCamPad();
+  }
+
+  camLongPress() {
+    if (!this.ctrl.camHome?.()) return;
+    this.audio.play('click');
+    this.closeCamPad();
+    this.toast('View reset', 'info');
+  }
+
+  openCamPad() {
+    if (this.rig?.locked || this.camPadOpen()) return;
+    const r = this.row3.getBoundingClientRect(); // (not 🧭 itself: its pop / pulse scales its box)
+    this.camPad.style.top = Math.round(r.bottom + 6) + 'px';
+    this.camPad.style.right = Math.round(innerWidth - r.right) + 'px';
+    this.camPad.classList.remove('hidden');
+    this.camBtn.setAttribute('aria-expanded', 'true');
+    this.camBtn.classList.add('open');
+    this.refreshCamPad(true);
+    this.camIdle();
+    this.uiChanged('campad');
+  }
+
+  closeCamPad() {
+    if (!this.camPadOpen()) return;
+    clearTimeout(this._camIdle);
+    this.camPad.classList.add('hidden');
+    this.camBtn.setAttribute('aria-expanded', 'false');
+    this.camBtn.classList.remove('open');
+    this.uiChanged('campad');
+  }
+
+  camPadOpen() { return !!this.camPad && !this.camPad.classList.contains('hidden'); }
+
+  // the pad closes after CAMERA.padIdle s without a press
+  camIdle() {
+    clearTimeout(this._camIdle);
+    this._camIdle = setTimeout(() => this.closeCamPad(), CAMERA.padIdle * 1000);
+  }
+
+  camPadPress(dir, act) {
+    if (!this.camPadOpen()) return;
+    this.camIdle();
+    if (this.camCells[dir].classList.contains('disabled')) return;
+    this.audio.play('click');
+    act();
+    this.refreshCamPad(true);
+  }
+
+  // greyed buttons: Top at the highest tilt, Side at the lowest, everything while a hard beat holds the camera
+  refreshCamPad(force = false) {
+    const rig = this.rig;
+    if (!rig || (!force && !this.camPadOpen())) return;
+    const { min, max } = CAMERA.pitch, locked = !!rig.locked;
+    const off = { up: locked || rig.goal.pitch >= max - 0.005, down: locked || rig.goal.pitch <= min + 0.005, left: locked, right: locked, home: locked };
+    const sig = JSON.stringify(off);
+    if (!force && sig === this._camPadSig) return;
+    this._camPadSig = sig;
+    for (const [dir, el] of Object.entries(this.camCells)) {
+      el.classList.toggle('disabled', off[dir]);
+      el.setAttribute('aria-disabled', off[dir] ? 'true' : 'false');
+    }
+  }
+
+  // every frame (cheap): the needle follows the turn, the dot says the view is not Home
+  updateCompass(force = false) {
+    const rig = this.rig;
+    if (!rig) return;
+    if (force || this._needleYaw == null || Math.abs(rig.yaw - this._needleYaw) > 0.005) {
+      this._needleYaw = rig.yaw;
+      // the needle shows which way the camera faces: ↺ / Q (yaw up) turns it counter-clockwise, ↻ / E clockwise
+      // (the farm itself swings the other way, as when you turn your head)
+      this.camNeedle?.setAttribute('transform', `rotate(${((-(rig.yaw - CAMERA.yaw0) * 180) / Math.PI).toFixed(2)})`);
+    }
+    const away = !isHome(rig.goal.yaw, rig.goal.pitch);
+    if (away !== this._camAway) { this._camAway = away; this.camDot.classList.toggle('hidden', !away); }
+    if (this.camPadOpen()) this.refreshCamPad();
+  }
+
+  // a hard beat holds the camera: 🧭 dims and its pad closes
+  camLocked(locked) {
+    this.camBtn.classList.toggle('locked', !!locked);
+    if (locked) this.closeCamPad();
+    else this.refreshCamPad();
+  }
+
+  // 🧭 has just appeared (or a tip points at it): two gentle pulses
+  pulseCamBtn() {
+    const b = this.camBtn;
+    b.classList.remove('cam-pulse');
+    void b.offsetWidth;
+    b.classList.add('cam-pulse');
+    setTimeout(() => b.classList.remove('cam-pulse'), 2600);
+  }
+
+  renderCameraSettings(set) {
+    const twist = this.game.s.settings.twist !== false;
+    return h('div', { class: 'cam-settings' },
+      h('button', { class: 'toggle' + (twist ? ' on' : ''), onclick: () => { set('twist', !twist); this.refreshToolHint(); } },
+        h('span', {}, '🧭 Two-finger turn: ', h('b', {}, twist ? 'On' : 'Off')), h('span', { class: 'knob' })),
+      h('div', { class: 'cam-row' },
+        h('button', { class: 'btn small ghost', onclick: () => { this.closePanel(); this.ctrl.camHome(); } }, '🎥 Reset view'),
+        h('div', { class: 'muted small' }, 'Turn: twist two fingers · 🧭 · Q/E. Tilt: 🧭 · Z/X. Home: hold 🧭 · C.')),
+    );
+  }
+
   // ---------------------------------------------------------------- guide queries
   // The free screen area between the top bar and the bottom bars (for camera framing): { left, top, right, bottom }.
   // Guide elements can join in with data-safe-top / data-safe-bottom (e.g. a docked guide card).
@@ -607,7 +811,8 @@ export class HUD {
   safeRect({ band = false } = {}) {
     // HUD pieces at the top / bottom of the screen, as rects (Mabel's docked card marks itself data-safe-*)
     const rects = (els) => [...els].filter(isShown).map((el) => el.getBoundingClientRect()).filter((r) => r.width && r.height);
-    const tops = rects([this.levelBoxEl, this.questCard, this.pills, this.roundBtns, this.toolHint, ...document.querySelectorAll('[data-safe-top]')]);
+    // (the 🧭 view pad is transient and never counts)
+    const tops = rects([this.levelBoxEl, this.questCard, this.pills, this.roundBtns, this.camBtn, this.toolHint, ...document.querySelectorAll('[data-safe-top]')]);
     // the toolbar counts even before it is revealed, so framing doesn't jump when it appears
     const bots = [this.toolbar, this.seedBar, this.placeBar].filter((el) => el.isConnected && !el.classList.contains('hidden'))
       .map((el) => el.getBoundingClientRect()).concat(rects(document.querySelectorAll('[data-safe-bottom]')));
@@ -1418,6 +1623,7 @@ export class HUD {
             h('button', { class: 'seg-btn' + (hints === v ? ' on' : ''), onclick: () => set('hints', v) }, label))),
         ),
         toggle('🌾 Tap harvests whole field', tapHarvest, () => set('tapHarvest', !tapHarvest)),
+        this.revealed('camera') ? this.renderCameraSettings(set) : null,
         guided ? h('button', { class: 'btn small ghost skip-tour', onclick: () => { this.closePanel(); this.hook('onSkipTour'); } }, 'Skip tour ›') : null,
       ),
       h('div', { class: 'help' },
@@ -1428,7 +1634,7 @@ export class HUD {
           h('li', {}, '🍞 Turn goods into products in the Bakery & friends.'),
           h('li', {}, '🚚 Fill orders and 👋 serve visitors for coins & XP.'),
           h('li', {}, '📦 Storage fills up — upgrade it with materials that drop while you play.'),
-          h('li', {}, 'Move: drag (Hand) · two fingers · WASD / right-drag. Zoom: pinch / wheel. Rotate: Q / E.'),
+          h('li', {}, 'Move: drag (Hand) · two fingers · WASD / right-drag. Zoom: pinch / wheel. Turn & tilt: 🧭 · Q/E · Z/X.'),
         ),
       ),
       h('button', { class: 'btn small red ghost', onclick: () => { if (confirm('Start a brand new farm? All progress will be lost.')) g.reset(); } }, 'Reset farm'),

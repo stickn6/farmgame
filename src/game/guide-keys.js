@@ -19,7 +19,9 @@ export const GUIDE_KEY_PATTERNS = [
   // top bar
   /^level:box$/,
   /^pill:(coins|gems)$/,
-  /^btn:(today|trophy|settings)$/,
+  /^btn:(today|trophy|settings|camera)$/,
+  // the 🧭 view pad
+  /^cam:(up|down|left|right|home)$/,
   // toolbar
   /^tool:(hand|plow|seed|remove)$/,
   /^btn:(shop|barn|orders)$/,

@@ -5,7 +5,7 @@
 // It only changes presentation and input shortcuts: every rule lives in the Game.
 import * as THREE from 'three';
 import './guide.css';
-import { ITEMS, OBJECTS, ANIMALS, CHAPTERS, QUESTS, TUTORIAL, GUIDE, VISITORS, RECIPES } from '../game/config.js';
+import { ITEMS, OBJECTS, ANIMALS, CHAPTERS, QUESTS, TUTORIAL, GUIDE, VISITORS, RECIPES, CAMERA } from '../game/config.js';
 import {
   planStep, need, nextMode, questCardInfo, shouldAutoShowDaily, levelUpGo, pendingTip, graduationPending, fieldCentre, reserves,
 } from '../game/guide.js';
@@ -393,7 +393,7 @@ export class GuideLayer {
   topEdge(over) {
     if (over) return 8;
     let b = 0;
-    for (const el of [this.hud.levelBoxEl, this.hud.questCard, this.hud.pills, this.hud.roundBtns, this.hud.toolHint]) if (shown(el)) b = Math.max(b, el.getBoundingClientRect().bottom);
+    for (const el of [this.hud.levelBoxEl, this.hud.questCard, this.hud.pills, this.hud.roundBtns, this.hud.camBtn, this.hud.toolHint]) if (shown(el)) b = Math.max(b, el.getBoundingClientRect().bottom);
     return b + 8;
   }
 
@@ -589,6 +589,7 @@ export class GuideController {
     this.camSig = '';
     this.glowUntil = 0;
     this.lastTipAt = -1e9;
+    this.tipCtx = {}; // this session's triggers for EXTRA_TIPS (cameraTipDue, …)
     this.dailyQueued = false;
     this.dropInterrupt = null;
     this.fieldChip = null; // the field just planted in the tour: { tiles, crop }
@@ -841,6 +842,7 @@ export class GuideController {
   showMe(opts = {}) {
     const g = this.game;
     if (!this.started || this.layer.modalOpen) return;
+    this.hud.closeCamPad?.();
     if (this.session) this.endSession();
     this.tick();
     const kind = opts.need ? 'need' : opts.meanwhile ? 'meanwhile' : 'show';
@@ -901,8 +903,8 @@ export class GuideController {
       if (end) setTimeout(() => { if (this.session === s) this.endSession(); this.requestTick(); }, 250);
       return;
     }
-    // scrolling the open panel or picking in the seed popover is not a miss
-    if (t.closest?.('.sheet, .seed-pop, .levelup')) return;
+    // scrolling the open panel, picking in the seed popover or turning the view (🧭, its pad) is not a miss
+    if (t.closest?.('.sheet, .seed-pop, .levelup, .cam-pad, .cam-btn')) return;
     if (t === this.world.canvas) {
       // on the farm only a tap counts (§2.2 "2 taps outside the target"): a pinch's second finger or a camera drag
       // doesn't. Input decides on pointerup, so the miss waits for it (see pointerUp)
@@ -939,7 +941,9 @@ export class GuideController {
     if (!this.hard || this.hard.key !== key) {
       this.hard = { key, since: now, misses: 0, lostSince: null };
       this.ctrl.input.cameraLocked = true;
-      if (res?.world) this.frameTo(res.world, { minDist: 13 });
+      // the beat frames its target at the default tilt (a view tilted beforehand comes back to it); the turn stays
+      const tilted = Math.abs(this.world.rig.goal.pitch - CAMERA.pitch.def) > 0.01;
+      if (res?.world) this.frameTo(res.world, { minDist: 13, pitch: tilted ? CAMERA.pitch.def : undefined });
     }
     const hb = this.hard;
     const ok = res && res.rect && (res.dom || res.visible) && res.rect.x + res.rect.w > 0 && res.rect.x < innerWidth && res.rect.y + res.rect.h > 0 && res.rect.y < innerHeight;
@@ -976,13 +980,14 @@ export class GuideController {
     const res = this.res;
     if (res?.world) {
       // in view but hidden behind a building or a bubble: turn the camera a quarter to see it from another side
-      if (res.visible && inSafe(res.point, this.hud.safeRect())) this.world.rig.rotateBy(Math.PI / 2);
+      if (res.visible && inSafe(res.point, this.hud.safeRect())) { this.world.rig.rotateBy(Math.PI / 2); this.world.rig.onView?.(); }
       this.frameTo(res.world);
     }
     if (this.session) this.session.lastInput = nowS();
   }
 
-  // frame world points in the safe rect, keeping the player's zoom when it fits
+  // frame world points in the safe rect, keeping the player's zoom when it fits (and their turn and tilt:
+  // opts pass through to World.frame, where only a hard beat asks for the default tilt)
   frameTo(points, opts = {}) {
     const d = this.world.rig.goal.dist;
     return this.world.frame(points, { safe: this.hud.safeRect(), minDist: Math.min(30, Math.max(10, d)), maxDist: Math.max(30, d), ...opts });
@@ -1076,7 +1081,7 @@ export class GuideController {
 
   trackCamera() {
     const r = this.world.rig;
-    const sig = `${r.target.x.toFixed(2)},${r.target.z.toFixed(2)},${r.dist.toFixed(2)},${r.yaw.toFixed(3)}`;
+    const sig = `${r.target.x.toFixed(2)},${r.target.z.toFixed(2)},${r.dist.toFixed(2)},${r.yaw.toFixed(3)},${r.pitch.toFixed(3)}`;
     if (sig !== this.camSig) { this.camSig = sig; this.camAt = nowS(); }
   }
 
@@ -1256,17 +1261,18 @@ export class GuideController {
     this.enqueue('daily', () => this.hud.showDaily(true), () => g.dailyStatus().canClaim, this.startedAt + 1.2);
   }
 
-  // FEATURE_TIPS (§2.8): once each, after the level-up closed, 45 s apart, never in the tour
+  // FEATURE_TIPS (§2.8), then EXTRA_TIPS (§7.6): once each, after the level-up closed, 45 s apart, never in the tour
   tips() {
     const g = this.game;
     if (g.tutorialMode() === 'guided' || g.s.settings?.hints === 'off') return;
     if (nowS() - this.lastTipAt < TIP_GAP || this.queue.some((q) => q.kind === 'tip')) return;
-    const tip = pendingTip(g);
+    const tip = pendingTip(g, this.tipCtx);
     if (!tip) return;
     this.enqueue('tip', () => {
       if (!g.markSeen(tip.key)) return;
       this.lastTipAt = nowS();
-      this.layer.toastCard(tip.text, { ms: 7000 });
+      const onTap = tip.onTap ? () => { try { tip.onTap(this); } catch (e) { console.error('tip tap:', e); } } : null;
+      this.layer.toastCard(tip.text, { ms: 7000, onTap });
     });
   }
 
@@ -1282,7 +1288,8 @@ export class GuideController {
   pump() {
     const hud = this.hud, c = this.ctrl;
     while (this.queue.length) {
-      if (hud.topModal() || hud.levelUpPending() || c.placing || c.input.gesture || this.layer.modalOpen) return;
+      // (the 🧭 view pad is up only for a few seconds: everything waits for it)
+      if (hud.topModal() || hud.levelUpPending() || c.placing || c.input.gesture || this.layer.modalOpen || hud.camPadOpen?.()) return;
       const next = this.queue[0];
       if (nowS() < next.at) return;
       const modal = next.kind === 'chest' || next.kind === 'daily';
@@ -1366,6 +1373,9 @@ export class GuideController {
   placed(o, p) {
     const g = this.game;
     if (p?.gift && graduationPending(g)) g.markSeen('grad:gift');
+    // the first pen or workshop placed after the tour brings the turn & tilt tip (a good moment to look around it)
+    const kind = OBJECTS[o.type]?.kind;
+    if (!p?.gift && g.tutorialMode() !== 'guided' && (kind === 'pen' || kind === 'factory')) this.tipCtx.cameraTipDue = true;
     if (o.type === 'coop' && g.tutorialMode() === 'guided') this.speak('cameraTip', TUTORIAL.lines.cameraTip, { delay: 400 });
     this.requestTick();
   }

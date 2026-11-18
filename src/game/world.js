@@ -1,6 +1,7 @@
 // Scene, renderer, camera rig, lighting, day/night and the static environment.
 import * as THREE from 'three';
-import { MAP_SIZE } from './config.js';
+import { MAP_SIZE, CAMERA } from './config.js';
+import { stepYaw, nextPitch, homeYaw, nearestSnap, minDistFor } from './camera.js';
 import { makeObject, getModel, instantiate, bake, hashRand, MATS } from './assets.js';
 
 const HALF = MAP_SIZE / 2;
@@ -20,19 +21,24 @@ function placeCamera(camera, target, yaw, pitch, dist) {
 const smooth = (t) => t * t * (3 - 2 * t);
 
 // ------------------------------------------------------------------ camera rig
+// Orbit camera: target on the ground, yaw/pitch/dist around it. Every player move goes through here and is a
+// no-op while `locked` (guide hard beats; World.frame may still move it). Turn and tilt goals are the
+// player's own: nothing changes them on its own (World.frame only when a hard beat asks for the default tilt).
 export class CameraRig {
   constructor(camera) {
     this.camera = camera;
     this.target = new THREE.Vector3(-2, 0, -2);
-    this.yaw = Math.PI / 4;
-    this.pitch = 0.92;
+    this.yaw = CAMERA.yaw0;
+    this.pitch = CAMERA.pitch.def;
     this.dist = 20;
-    this.goal = { yaw: this.yaw, dist: this.dist, target: null };
+    this.goal = { yaw: this.yaw, pitch: this.pitch, dist: this.dist, target: null };
     this.velocity = new THREE.Vector3();
-    this.minDist = 7;
+    this.minDist = 7; // at the default tilt (see minDistFor)
     this.maxDist = 42;
-    this.locked = false; // set by Input.cameraLocked: player zoom/rotate become no-ops
+    this.locked = false; // set by Input.cameraLocked: player zoom/rotate/tilt become no-ops
     this.glideAnim = null; // timed eased move (World.frame with duration)
+    this.reducedMotion = () => false; // World: OS "reduce motion" → turn / tilt / Home snap instead of gliding
+    this.onView = null; // () after a turn / tilt button, a twist or orbit ends, or Home (main.js: persist + compass)
     this.apply();
   }
 
@@ -42,16 +48,93 @@ export class CameraRig {
     this.target.z = THREE.MathUtils.clamp(this.target.z, -lim, lim);
   }
 
+  // the closest zoom at a tilt (a low camera stays out of the roofs)
+  minDistFor(pitch = this.goal.pitch) { return minDistFor(pitch); }
+
   zoomBy(factor) {
     if (this.locked) return;
     this.glideAnim = null;
-    this.goal.dist = THREE.MathUtils.clamp(this.goal.dist * factor, this.minDist, this.maxDist);
+    this.goal.dist = THREE.MathUtils.clamp(this.goal.dist * factor, this.minDistFor(), this.maxDist);
   }
-  setDist(d) { this.goal.dist = this.dist = THREE.MathUtils.clamp(d, this.minDist, this.maxDist); this.apply(); }
+  setDist(d) { this.goal.dist = this.dist = THREE.MathUtils.clamp(d, this.minDistFor(), this.maxDist); this.apply(); }
   rotateBy(a) { if (!this.locked) this.goal.yaw += a; }
   focus(p) { this.glideAnim = null; this.goal.target = p.clone(); }
   // stop any automatic camera motion (the player grabbed the camera)
   stopGlide() { this.glideAnim = null; this.goal.target = null; }
+
+  // ---------------------------------------------------------------- turn & tilt (§1.4)
+  // 90° along the iso diagonals: dir +1 = Q / ↺, −1 = E / ↻
+  rotateStep(dir) {
+    if (this.locked) return;
+    this.goal.yaw = stepYaw(this.goal.yaw, dir);
+    this.settle();
+    this.changed();
+  }
+
+  // one tilt level: dir +1 = higher (top view), −1 = lower (side view)
+  tiltStep(dir) {
+    if (this.locked) return;
+    this.goal.pitch = nextPitch(this.goal.pitch, dir);
+    this.keepClear();
+    this.settle();
+    this.changed();
+  }
+
+  // any tilt in range (mouse orbit, Shift+wheel); instant: no lerp (1:1 with the pointer)
+  setPitch(p, instant = false) {
+    if (this.locked) return;
+    this.goal.pitch = THREE.MathUtils.clamp(p, CAMERA.pitch.min, CAMERA.pitch.max);
+    if (instant) this.pitch = this.goal.pitch;
+    this.keepClear();
+  }
+
+  // a lower tilt needs a little more distance (also for a glide in progress)
+  keepClear() {
+    const m = this.minDistFor();
+    this.goal.dist = Math.max(this.goal.dist, m);
+    if (this.glideAnim) this.glideAnim.d1 = Math.max(this.glideAnim.d1, m);
+  }
+
+  // the two-finger twist: 1:1, no lerp
+  twistTo(y) {
+    if (this.locked) return;
+    this.yaw = this.goal.yaw = y;
+    this.apply();
+  }
+
+  // mouse / 🧭 drag: right turns the farm, down tilts up to the top view
+  orbitBy(dx, dy) {
+    if (this.locked) return;
+    this.yaw = this.goal.yaw = this.goal.yaw - dx * CAMERA.orbit.yawPerPx;
+    this.setPitch(this.goal.pitch + dy * CAMERA.orbit.pitchPerPx, true);
+    this.apply();
+  }
+
+  home() {
+    if (this.locked) return;
+    this.goal.yaw = homeYaw(this.goal.yaw);
+    this.goal.pitch = CAMERA.pitch.def;
+    this.settle();
+    this.changed();
+  }
+
+  // after a twist or orbit: glide onto the nearest 45° view when close to one
+  snapYaw() {
+    if (this.locked) return;
+    const s = nearestSnap(this.goal.yaw);
+    if (s != null) this.goal.yaw = s;
+    this.settle();
+  }
+
+  // reduced motion: turn / tilt jump straight to the goal
+  settle() {
+    if (!this.reducedMotion()) return;
+    this.yaw = this.goal.yaw;
+    this.pitch = this.goal.pitch;
+    this.apply();
+  }
+
+  changed() { this.onView?.(); }
 
   // Eased move of target + distance over `duration` seconds (instead of the exponential lerp)
   glide(target, dist, duration) {
@@ -64,6 +147,8 @@ export class CameraRig {
   update(dt) {
     const k = 1 - Math.pow(0.0005, dt);
     this.yaw += (this.goal.yaw - this.yaw) * k;
+    this.pitch += (this.goal.pitch - this.pitch) * k;
+    if (Math.abs(this.goal.pitch - this.pitch) < 1e-4) this.pitch = this.goal.pitch;
     const gl = this.glideAnim;
     if (gl) {
       gl.t = Math.min(1, gl.t + dt / gl.dur);
@@ -86,6 +171,8 @@ export class CameraRig {
   apply() {
     this.clampTarget();
     placeCamera(this.camera, this.target, this.yaw, this.pitch, this.dist);
+    // picking right after a move (a twist re-anchors under the fingers in the same event) needs the new rotation
+    this.camera.updateMatrixWorld();
   }
 }
 
@@ -119,6 +206,7 @@ export class World {
     const mq = window.matchMedia?.('(prefers-reduced-motion: reduce)');
     this.prefersReducedMotion = !!mq?.matches;
     mq?.addEventListener?.('change', (e) => { this.prefersReducedMotion = e.matches; });
+    this.rig.reducedMotion = () => this.prefersReducedMotion;
     this.resize();
     window.addEventListener('resize', () => this.resize());
   }
@@ -163,6 +251,14 @@ export class World {
     const sunT = Math.min(1, t / 0.76); // sun arc during day
     const ang = THREE.MathUtils.lerp(0.25, Math.PI - 0.25, sunT);
     const tgt = this.rig.target;
+    // a low tilt sees further: widen the sun's shadow box a little (24 → 30)
+    const ext = this.rig.pitch < CAMERA.lowPitch ? 30 : 24;
+    if (this.shadowExt !== ext) {
+      this.shadowExt = ext;
+      const sc = this.sun.shadow.camera;
+      sc.left = sc.bottom = -ext; sc.right = sc.top = ext;
+      sc.updateProjectionMatrix();
+    }
     const sunDir = new THREE.Vector3(Math.cos(ang) * 0.8, Math.sin(ang) * 0.9 + 0.35, 0.55).normalize();
     this.sun.position.copy(tgt).addScaledVector(sunDir, 40);
     this.sun.target.position.copy(tgt);
@@ -349,7 +445,8 @@ export class World {
     this.clouds = [];
     for (let i = 0; i < 9; i++) {
       const c = makeObject('cloud:' + i, { shadow: false, receive: false });
-      c.position.set((r() - 0.5) * 140, 36 + r() * 6, (r() - 0.5) * 110 - 10); // above the highest camera position (~33), so it never flies through them
+      // above the highest camera position (top tilt 1.22 at max zoom 42: sin(1.22)·42 ≈ 39.4), so it never flies through them
+      c.position.set((r() - 0.5) * 140, 46 + r() * 6, (r() - 0.5) * 110 - 10);
       c.scale.setScalar(1 + r());
       c.userData.speed = 0.6 + r() * 0.8;
       this.scene.add(c);
@@ -454,9 +551,10 @@ export class World {
 
   // Move the camera so all `points` fit inside `safe` (CSS px rect) at the closest distance in
   // [minDist, maxDist], with their centroid at screen height screenY·innerHeight (clamped into safe).
-  // Keeps the current yaw/pitch. Glides via the rig's lerp, or over `duration` s with an eased tween;
+  // Keeps the player's yaw and tilt (the goal ones), unless `pitch` asks for a tilt (a hard beat's default view):
+  // that becomes the rig's tilt goal. Glides via the rig's lerp, or over `duration` s with an eased tween;
   // `instant` (or OS reduced motion) snaps. Returns { target, dist, fits }.
-  frame(points, { safe = this.viewRect(), screenY = 0.42, minDist = 10, maxDist = 30, instant = false, duration = 0 } = {}) {
+  frame(points, { safe = this.viewRect(), screenY = 0.42, minDist = 10, maxDist = 30, instant = false, duration = 0, pitch: pitchOpt } = {}) {
     const rig = this.rig;
     if (!points || !points.length) return null;
     const W = window.innerWidth, H = window.innerHeight;
@@ -467,7 +565,8 @@ export class World {
     const cy = THREE.MathUtils.clamp(screenY * H, safe.top, safe.bottom);
     const cam = this.scratchCam;
     cam.copy(this.camera, false);
-    const yaw = rig.goal.yaw, pitch = rig.pitch;
+    const yaw = rig.goal.yaw, pitch = pitchOpt ?? rig.goal.pitch;
+    if (pitchOpt != null) rig.goal.pitch = pitch;
     const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -C.y);
     const ndc = new THREE.Vector2((cx / W) * 2 - 1, -(cy / H) * 2 + 1);
     const ray = new THREE.Raycaster();
@@ -487,7 +586,7 @@ export class World {
       return T;
     };
     const fits = (d) => { solve(d); return this.inSafe(points, safe, 1, cam); };
-    const lo0 = Math.max(rig.minDist, Math.min(minDist, maxDist)), hi0 = Math.min(rig.maxDist, Math.max(minDist, maxDist));
+    const lo0 = Math.max(rig.minDistFor(pitch), Math.min(minDist, maxDist)), hi0 = Math.min(rig.maxDist, Math.max(minDist, maxDist));
     let d = hi0, ok = true;
     if (fits(lo0)) d = lo0;
     else if (!fits(hi0)) ok = false;
@@ -505,6 +604,7 @@ export class World {
       rig.goal.target = null;
       rig.velocity.set(0, 0, 0);
       rig.yaw = rig.goal.yaw;
+      rig.pitch = rig.goal.pitch;
       rig.target.copy(T);
       rig.setDist(d);
     } else if (duration > 0) rig.glide(T, d, duration);

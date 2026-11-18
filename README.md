@@ -88,6 +88,7 @@ When the goal is a wait, a **Meanwhile** row suggests something useful to do in 
 **Settings** (⚙️):
 - **Hints:** *Full*, *Glow only* or *Off*. Show me always works.
 - **Tap harvests whole field.**
+- **Camera:** two-finger turn on/off and **Reset view** (shown once 🧭 is out, at the end of the tour). Your turn and tilt are remembered.
 - **Skip tour**, shown only during the tour.
 
 **Mabel's other appearances.**
@@ -170,7 +171,9 @@ To add content, use the reserved levels 31+ (`FUTURE_SLOTS` in config.js). Give 
 |---|---|---|
 | Move camera | drag (Hand tool) or two fingers | drag (Hand) · right-drag · WASD / arrows |
 | Zoom | pinch | mouse wheel · `+` / `-` |
-| Rotate | — | `Q` / `E` |
+| Turn | twist two fingers · 🧭 ↺ ↻ | `Q` / `E` · middle-drag or Ctrl/⌘+drag |
+| Tilt | 🧭 ▲ Top / ▼ Side · drag 🧭 | `Z` / `X` · `PageUp` / `PageDown` · Shift+wheel · middle-drag |
+| Home view | 🧭 Home · hold 🧭 | `C` / `Home` |
 | Tools | toolbar | `1` Hand · `2` Plow · `3` Seeds · `4` Clear |
 | Panels | toolbar · 🎁 Today · 🏆 · ⚙️ | `P` Shop · `B` Storage · `O` Orders · `Esc` close |
 | Placing buildings | drag, then ✓ | click to place · `R` rotate |
@@ -190,6 +193,7 @@ src/
     layout.js          Pure helpers: field patches, smart building spots, plow suggestions
     guide.js           Guide planner (pure): the next step for the current goal, Show me, Meanwhile
     guide-keys.js      The data-guide target keys the HUD renders and the planner points at
+    camera.js          Pure turn & tilt helpers (90° steps, tilt levels, Home, snap, two-finger twist)
     assets.js          Procedural model toolkit + original models, baked to 1 mesh each
     models/*.js        Additional models (buildings, decor, animals & villagers, crops & trees)
     world.js           Renderer, camera rig, lights, day/night, ground, forest, pond, road, clouds

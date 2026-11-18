@@ -621,3 +621,43 @@ button { font-family: inherit; color: inherit; cursor: pointer; border: none; ba
   .seed-pop.out, .sheet, .levelup, .backdrop, .xp-fill, .q-fill { transition: none !important; }
   .confetti { display: none; }
 }
+
+/* ================================================================ v4: turn & tilt (🧭 and its view pad) */
+/* row 3 of the top-right column: [post pill (next)] [🧭], right-aligned under 🎁🏆⚙️ */
+.row3 { display: flex; justify-content: flex-end; gap: 6px; align-items: center; }
+.cam-btn { display: flex; align-items: center; justify-content: center; padding: 0; transition: opacity .2s, filter .2s, background .2s; }
+.cam-btn::after { content: ''; position: absolute; inset: -5px; border-radius: 50%; } /* a 44 px hit area on the 34 px phone button */
+.cam-btn svg { display: block; width: 28px; height: 28px; pointer-events: none; }
+.cam-btn.open { background: #ffe9a8; }
+.cam-btn.locked { opacity: .45; filter: grayscale(.8); }
+.cam-dot { position: absolute; top: 0; right: 0; width: 6px; height: 6px; border-radius: 50%; background: var(--blue); box-shadow: 0 0 0 1.5px #fff; pointer-events: none; }
+.cam-btn.cam-pulse { animation: camPulse .8s ease-in-out .55s 2; }
+@keyframes camPulse { 50% { scale: 1.18; box-shadow: 0 0 0 6px rgba(255, 201, 52, .6), 0 3px 0 rgba(0,0,0,.25); } }
+.cam-pad {
+  position: absolute; display: grid; grid-template-columns: repeat(3, 44px); grid-auto-rows: 44px; gap: 4px; padding: 6px;
+  background: rgba(255, 248, 231, .96); border: 2px solid #fff; border-radius: 16px; box-shadow: 0 4px 0 rgba(0,0,0,.18), 0 8px 24px rgba(0,0,0,.18);
+  transform-origin: top right; animation: camPadIn .16s ease-out both;
+}
+.cam-cell { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; border-radius: 11px; background: #fff; color: var(--wood-dark); box-shadow: 0 2px 0 #e3d3ad; padding: 0; }
+.cam-cell:active { transform: translateY(2px); box-shadow: none; }
+.cam-ico svg { display: block; }
+.cam-lbl { font-size: 10px; font-weight: 700; line-height: 1; }
+.cam-cell[data-dir="home"] { background: #eaffd8; color: var(--green-dark); }
+.cam-cell.disabled { opacity: .38; filter: grayscale(1); }
+.cam-cell.disabled:active { transform: none; box-shadow: 0 2px 0 #e3d3ad; }
+@keyframes camPadIn { from { opacity: 0; transform: scale(.85); } }
+.cam-settings { display: flex; flex-direction: column; gap: 6px; }
+.cam-settings .toggle b { color: var(--green-dark); }
+.cam-row { display: flex; align-items: center; gap: 10px; padding: 0 4px; }
+.cam-row .muted { flex: 1; line-height: 1.3; }
+@media (max-width: 520px) {
+  .cam-pad { grid-template-columns: repeat(3, 40px); grid-auto-rows: 40px; }
+  .cam-btn svg { width: 24px; height: 24px; }
+}
+@media (max-width: 360px) {
+  .round-btns { gap: 4px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cam-pad, .cam-btn.cam-pulse { animation: none !important; }
+  .cam-btn { transition: none !important; }
+}

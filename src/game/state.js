@@ -94,7 +94,8 @@ export class Game extends Emitter {
       lastSeen: now,
       nextId: 1,
       stats: { harvested: 0, orders: 0 },
-      settings: { sound: true, music: true, hints: 'glow', tapHarvest: true },
+      // cam: the remembered turn & tilt ({ yaw, pitch }, null = Home); twist: two-finger turn on
+      settings: { sound: true, music: true, hints: 'glow', tapHarvest: true, cam: null, twist: true },
       // LEGACY defaults (old saves get these via migrate's fill-in): no tour, no new-farm assists.
       // mode: 'guided' → 'coached' → 'independent'; reveal: 'all' or the HUD keys shown so far;
       // seen: one-time lines/tips/interrupts; net: when the safety net last paid out
@@ -1547,7 +1548,7 @@ export class Game extends Emitter {
     this.saveSoon();
   }
 
-  // Progressive HUD reveal. Keys: quest, barn, level, gems, orders, shop, tools, today, trophy.
+  // Progressive HUD reveal. Keys: quest, barn, level, gems, orders, shop, tools, today, trophy, camera, post.
   // Everything shows once the tour is over, from level 5, or 2 hours into a new farm.
   revealAll() {
     const t = this.s.tutorial;

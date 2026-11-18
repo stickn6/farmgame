@@ -261,6 +261,7 @@ export class SimUI {
         break;
       }
       case 'bubble': this.tapBubble(b); break;
+      case 'cam': sec = 0; break; // the 🧭 view pad changes nothing in the rules
       default: break;
     }
     return sec;
