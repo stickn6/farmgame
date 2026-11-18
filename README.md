@@ -39,6 +39,8 @@ npm run sim      # pacing simulator: how long each level/unlock takes, bots and 
 
 **Daily rhythm.** Every day brings a **gift calendar** and **3 daily chores** scaled to your level. The calendar never resets if you miss a day.
 
+**Turn and tilt.** Twist two fingers to turn your farm, or tap **🧭** for a small view pad: ↺ ↻ turn it 90°, ▲ *Top* / ▼ *Side* step through 5 tilt levels, and *Home* goes back to the usual view. Hold 🧭 to go Home, or drag it to orbit. Your view is remembered between visits. 🧭 and the twist arrive at the end of the tour; while Mabel holds the screen during the tour, the camera stays put.
+
 **The Post.** Your first parcel comes 5 minutes after you start, and each next one is on its way the moment you open the last: 10 min, 15 min, 30 min, then 3 hours, then every 8 hours. One always waits for you, even while the game is closed; parcels never pile up or expire. The 📪 pill (next to 🧭) counts down and turns into 📬 *Open!*; you open each parcel yourself with a little reveal. They come from Grandma Mabel and the villagers with a note, and hold gems, keepsakes for Mabel's album, pantry goods and a little coin that grows with your level (the first coins at 4 hours), plus a 📮 **Mailbox** for your farm at 1 hour: its flag goes up when a parcel waits. Parcels never give XP or building materials. Farms from before the Post get one *Post office opening* parcel instead of the welcome ones.
 
 **Mabel's Keepsake Album** (🏆 → 📖 Album). 72 keepsakes on 12 pages of 6. They turn up while you farm (each page has a favourite source: crops, animals, workshops, orders and visitors, fruit, or anywhere) and in parcels, and you never get a duplicate. The chance of a find grows with the XP an action earns, with a pity meter, so quick crops can't farm them. The album opens with Kip's clover in parcel #3 (or at level 8); page 1 opens with it, the others at levels 8, 11, 14, 17, 19, 24, 27, 31, 35, 37 and 39. A full page pays gems and a one-of-a-kind recoloured decoration (the Bluebird Bath, Copper Well, … Silver Rooster, Sky Balloon) to put up on the farm; the first 8 pages also bring the **Curio Cabinet** and the title *Keeper of Keepsakes*, all 12 *Valley Historian*. Album rewards never give XP or building materials. 🏆 **Treasures** holds the album, the ribbons and the achievements (**Awards**).
@@ -68,11 +70,18 @@ npm run sim      # pacing simulator: how long each level/unlock takes, bots and 
 
 Saves from before the tutorial update keep their current goal (mapped onto the new goal list), skip the tour and start with hints set to *Glow only*. They get no starter debris, ripe field or free bake.
 
+Saves from before the Post (save version 3) move to version 4:
+- a young farm (level 6 or below, started with the tour, less than 4 hours old) gets the full run of welcome parcels, the first one a minute after loading at the earliest;
+- every other farm gets one *Post office opening* parcel from Mayor Hank, waiting on the 📬 pill (it never pops up by itself): the Mailbox to put up, 💎5, a little coin and Kip's clover, which opens Mabel's album. After that a parcel comes every 8 hours, and a single *What's new* card explains the Post, the album and 🧭;
+- the new level-up tips (levels 31, 35, 37 and 39) are marked as seen when the farm is already past them, and the view starts at Home.
+
+The save also keeps the Post's countdown, the album, ribbon ranks, gilding vouchers and titles, which decorations are gilded, your turn and tilt, and the album's own random seed (so keepsake picks never change the orders, visitors or drops). On every load the Post's countdown is capped at one full gap plus 5 minutes, so a save written while the clock was ahead is never locked out of its parcels.
+
 ## Tutorial and guide
 
-**Chapter 1, "A Fresh Start"** (about 7 minutes, levels 1–4) is a guided tour. Mabel's finger points at one thing at a time: harvest the ripe wheat, plant, deliver an order, build a coop, buy and feed chickens, plow, plant carrots, collect eggs (tidying weeds and stones while you wait), build a bakery and bake bread. The HUD fills in as each part is needed. Only the first three taps hold the screen, and even those let go after a second missed tap.
+**Chapter 1, "A Fresh Start"** (about 7 minutes, levels 1–4) is a guided tour. Mabel's finger points at one thing at a time: harvest the ripe wheat, plant, deliver an order, build a coop, buy and feed chickens, plow, plant carrots, collect eggs (tidying weeds and stones while you wait, and opening your first parcel when the Post arrives at 5 minutes), build a bakery and bake bread. The HUD fills in as each part is needed. Only the first three taps hold the screen, and even those let go after a second missed tap.
 
-Graduation ends the tour. You open a chest (gems and a Scarecrow to place), claim your first daily gift, and Mabel shows you the goal card. "I've farmed before" on her welcome card, or **Skip tour** in ⚙️ Settings, skips straight to the coached mode with the same goals.
+Graduation ends the tour. You open a chest (gems and a Scarecrow to place), claim your first daily gift, and Mabel shows you the goal card. 🧭 and the Post's pill join the HUD at this point. "I've farmed before" on her welcome card, or **Skip tour** in ⚙️ Settings, skips straight to the coached mode with the same goals.
 
 **Chapters 2 and 3** ("Barnyard Friends", "Open for Business") take the scripted goals to about level 9 or 10. Each chapter's chest holds gems and a decoration, never coins, XP or materials. After that come the endless repeat goals.
 
@@ -125,6 +134,7 @@ The beginner column is the median of 5 seeds, with the range in brackets, becaus
 |---|---|---|---|---|---|
 | Chickens (L2) / Bakery (L3) | 0.6 / 3 min | 0.1 / 0.9 min | same | same | same |
 | First parcel opened | 5:14 (in Chapter 1's egg wait) | 5 min | 5 min | 5 min | 5 min |
+| Parcels after that | 15, 31 and 61 min | 15 min, 30 min, 1 h, 4 h | 15 min, then 2 a day | 2 a day | 2 a day |
 | Chapter 1 (tour) done | 7.3 min | — | — | — | — |
 | Cows (L5) | 13 min | 8.5 min | 8.5 min | 4.5 h (2nd session) | 8.5 min |
 | Visitors (L7) | 30 min (26–34) | 24 min | day 1 | day 1 | day 1 |
@@ -135,13 +145,14 @@ The beginner column is the median of 5 seeds, with the range in brackets, becaus
 | L25 | — | — | day 8.4 | day 10.4 | day 18 |
 | **Last unlock (L30)** | — | **— (not in an 8 h sitting)** | **day 16** | **day 20** | **day 34** |
 | Album pages 1–8 / all 12 | — | page 1 at 4 h | day 24 / day 44 | day 25 / day 51 | day 28 / day 84 |
+| Ribbon rank 10 / 20 / 30 (with `--decorator 0.5`) | — | — (L19 at 6.4 h) | day 10 / 20 / 29 | day 11 / 23 / 37 | day 19 / 42 / 73 |
 
 Other beginner figures (median of 5 seeds):
 - the longest gap between rewards (harvests, collections, goods, orders, visitors, parcels, keepsakes, goals, levels) in the first 30 minutes is 93 s (worst seed 128 s);
 - about a third of the time is spent waiting on timers;
 - the Silo first reaches 90% at about 15 minutes.
 
-**Prettiest Farm.** The plain bots never decorate, so their charm is the starter decor (rank 1). A `--decorator 0.5` engaged bot puts up its gifts and, from L19, spends half of what it earns (above 2,000 + 400·L) on the best 💗 per coin, gilding from L31: rank 10 on day 10.4, rank 20 on day 20, all 30 on day 29 (about 0.26M coins and 170 gems sunk by then, out of 0.7M coins earned). A player who only puts up gifts reaches rank 3 at L19 (day 4.4) and rank 11 by day 25.
+**Prettiest Farm.** The plain bots never decorate, so their charm is the starter decor (rank 1). A `--decorator 0.5` engaged bot puts up its gifts and, from L19, spends half of what it earns (above 2,000 + 400·L) on the best 💗 per coin, gilding from L31: rank 10 on day 10.4, rank 20 on day 20, all 30 on day 29 (about 0.26M coins and 170 gems sunk by then, out of 0.7M coins earned). The same decorator on the casual profile reaches ranks 10 / 20 / 30 on days 11 / 23 / 37, and on the light profile on days 19 / 42 / 73. A player who only puts up gifts reaches rank 3 at L19 (day 4.4) and rank 11 by day 25.
 
 **The Post and the album** never pay XP or building materials, and the first coins come at 4 hours. On days 2–30 they add, per day: 2 parcels, coins and pantry goods worth about 3% of the coins a player earns (engaged 3.1%, casual 3.3%, light players 5.3%, as intended catch-up), and about 6 new gems. With them turned off (`--features off`) the non-stop bot reaches every level up to L16 at exactly the same minute (the album draws from the save's own random numbers, so orders, visitors and drops don't change), and the engaged bot's L30 over 12 seeds is day 15.8 against 16.0 without them (a single seed can move by up to about three days either way).
 
@@ -183,6 +194,7 @@ Commands:
     - the welcome parcels #1–#4 hold no coins or goods;
     - levels 31, 35, 37 and 39 unlock something (album pages);
     - Prettiest Farm: the engaged bot, which never decorates, stays below ribbon rank 10; an engaged decorator (`--decorator 0.5`, a 21-day run) reaches rank 10 no sooner than day 7.
+  - The checks for the Post, the album and the ribbons run on a single seed. There is no separate A/B command: compare `npm run sim -- --features off` with a normal run by hand (the last comparison is in the paragraph above).
 
 To add content, use the reserved levels 31+ (`FUTURE_SLOTS` in config.js). Give the new thing a level and a timer, and the price/XP formulas in config.js price it for you.
 
@@ -192,7 +204,7 @@ To add content, use the reserved levels 31+ (`FUTURE_SLOTS` in config.js). Give 
 |---|---|---|
 | Move camera | drag (Hand tool) or two fingers | drag (Hand) · right-drag · WASD / arrows |
 | Zoom | pinch | mouse wheel · `+` / `-` |
-| Turn | twist two fingers · 🧭 ↺ ↻ | `Q` / `E` · middle-drag or Ctrl/⌘+drag |
+| Turn | twist two fingers · 🧭 ↺ ↻ · drag 🧭 | `Q` / `E` · middle-drag or Ctrl/⌘+drag |
 | Tilt | 🧭 ▲ Top / ▼ Side · drag 🧭 | `Z` / `X` · `PageUp` / `PageDown` · Shift+wheel · middle-drag |
 | Home view | 🧭 Home · hold 🧭 | `C` / `Home` |
 | Tools | toolbar | `1` Hand · `2` Plow · `3` Seeds · `4` Clear |
@@ -223,7 +235,8 @@ src/
     effects.js         Particles, floating text, "fly to UI" icons
     audio.js           WebAudio synth sound effects + generative music
   ui/
-    hud.js             DOM HUD: toolbar, shop, storage, orders, production, visitors, achievements…
+    hud.js             DOM HUD: toolbar, shop, storage, orders, production, visitors, the Post pill and parcel
+                       reveal, 🧭 view pad, 🏆 Treasures (album, ribbons, awards)…
     guide-ui.js        Mabel's card, finger, spotlight and hints (GuideLayer + GuideController)
     guide.css          Styles for the guide layer (imported by guide-ui.js)
     bubbles.js         Speech bubbles pinned to 3D objects

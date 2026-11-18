@@ -50,6 +50,7 @@ class Controller {
     this.hud = new HUD(document.getElementById('hud'), this.game, this, this.audio);
     this.effects = new Effects(this.world, this.hud.fx);
     this.bubbles = new Bubbles(document.getElementById('bubbles'), this.world);
+    this.bubbles.hudRects = () => this.hud.hudRects();
 
     this.input = new Input(this.world.canvas, this.world, {
       decide: (e) => this.decide(e),

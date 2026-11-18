@@ -829,7 +829,7 @@ export class HUD {
       this.ctrl.postClosed?.(res);
     });
     back._enter = () => btn.click();
-    back.addEventListener('click', (e) => { if (e.target === back && state !== 'opening') back._close(); });
+    back.addEventListener('click', (e) => { if (back._outside(e) && state !== 'opening') back._close(); });
     return back;
   }
 
@@ -953,6 +953,12 @@ export class HUD {
   }
 
   camPadOpen() { return !!this.camPad && !this.camPad.classList.contains('hidden'); }
+
+  // the boxes of the always-there HUD (top bar clusters and the toolbar): world bubbles fade under them
+  hudRects() {
+    return [this.levelBoxEl, this.questCard, this.pills, this.roundBtns, this.postPill, this.camBtn, this.toolbar, this.placeBar, this.seedBar]
+      .filter(isShown).map((e) => e.getBoundingClientRect()).filter((r) => r.width > 0);
+  }
 
   // the pad closes after CAMERA.padIdle s without a press
   camIdle() {
@@ -2128,6 +2134,10 @@ export class HUD {
   showModal(kind, modal, close) {
     this.closeSeedPopover();
     const back = h('div', { class: 'backdrop levelup-back', 'data-modal': kind }, modal);
+    // a tap on the dim closes some modals; not the click of the very tap that opened it (a farm tap on the
+    // Mailbox opens the parcel on pointerup, and its click then lands on the new backdrop)
+    const openedAt = performance.now();
+    back._outside = (e) => e.target === back && performance.now() - openedAt > 400;
     back._close = () => {
       if (back._closed) return;
       back._closed = true;
@@ -2215,7 +2225,7 @@ export class HUD {
       } }, st.canClaim ? 'Claim!' : 'OK'),
     );
     const back = this.showModal('daily', modal, opts.onClose);
-    back.addEventListener('click', (e) => { if (e.target === back) back._close(); });
+    back.addEventListener('click', (e) => { if (back._outside(e)) back._close(); });
     return back;
   }
 

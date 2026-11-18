@@ -210,7 +210,8 @@ button { font-family: inherit; color: inherit; cursor: pointer; border: none; ba
 .fly-icon { position: absolute; left: 0; top: 0; font-size: 30px; pointer-events: none; filter: drop-shadow(0 3px 2px rgba(0,0,0,.3)); will-change: transform; }
 
 /* ---------------------------------------------------------------- world bubbles */
-.bubble-anchor { position: absolute; left: 0; top: 0; pointer-events: auto; cursor: pointer; will-change: transform; }
+.bubble-anchor { position: absolute; left: 0; top: 0; pointer-events: auto; cursor: pointer; will-change: transform; transition: opacity .15s; }
+.bubble-anchor.under-hud { opacity: .28; } /* slid under the top bar or the toolbar: the HUD's text stays readable */
 .bubble {
   background: #fff; border-radius: 16px; padding: 3px 8px; font-size: 22px; line-height: 1.2; position: relative; margin-bottom: 8px;
   box-shadow: 0 3px 0 rgba(0,0,0,.18); animation: bubbleIn .3s cubic-bezier(.2,.9,.3,1.5); display: flex; flex-direction: column; align-items: center;
@@ -656,6 +657,11 @@ button { font-family: inherit; color: inherit; cursor: pointer; border: none; ba
 }
 @media (max-width: 360px) {
   .round-btns { gap: 4px; }
+}
+/* 7 tools at 46 px make a 365 px toolbar: on 360 px phones its rounded ends were cut off */
+@media (max-width: 370px) {
+  .tool { width: 44px; }
+  .toolbar { padding: 4px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .cam-pad, .cam-btn.cam-pulse { animation: none !important; }

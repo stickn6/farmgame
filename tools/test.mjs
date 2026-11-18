@@ -1,5 +1,7 @@
 // Rules tests for the game model (runs in Node, no browser):  npm test
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import { Game } from '../src/game/state.js';
 import * as CFG from '../src/game/config.js';
 
@@ -1931,6 +1933,27 @@ test('album: albumStatus and albumSeen (NEW finds)', () => {
   assert.equal(ev, 1);
   g.albumSeen('meadow');
   assert.equal(ev, 1, 'nothing new: no event');
+});
+
+// §7.7 #12 (older Androids): the game only uses emoji up to Unicode 13 (Android 11, iOS 14.2), checked in every source
+// file. Unicode 14+ shows as an empty box on older phones. The one older exception is v2's Peach Jam 🫙 (Unicode 14).
+test('emoji: nothing newer than Unicode 13 in src/ (except v2\'s Peach Jam 🫙)', () => {
+  const files = [];
+  const walk = (d) => { for (const f of fs.readdirSync(d)) { const q = path.join(d, f); if (fs.statSync(q).isDirectory()) walk(q); else if (/\.(js|css|html)$/.test(f)) files.push(q); } };
+  walk(new URL('../src', import.meta.url).pathname);
+  assert.ok(files.length > 15);
+  // single code points added in Unicode 14, 15 and 16 (15.1 only added sequences)
+  const NEW = [[0x1f6dc, 0x1f6df], [0x1f7f0, 0x1f7f0], [0x1f979, 0x1f979], [0x1f9cc, 0x1f9cc], [0x1fa75, 0x1fa77], [0x1fa7b, 0x1fa7c], [0x1fa87, 0x1fa89],
+    [0x1fa8f, 0x1fa8f], [0x1faa9, 0x1faaf], [0x1fab7, 0x1fabf], [0x1fac3, 0x1fac6], [0x1face, 0x1facf], [0x1fad7, 0x1fadf], [0x1fae0, 0x1fae9], [0x1faf0, 0x1faf8]];
+  const found = [];
+  for (const f of files) {
+    for (const ch of fs.readFileSync(f, 'utf8')) {
+      const c = ch.codePointAt(0);
+      if (ch !== '🫙' && NEW.some(([a, b]) => c >= a && c <= b)) found.push(`${ch} in ${path.basename(f)}`);
+    }
+  }
+  assert.deepEqual(found, []);
+  assert.equal(CFG.ITEMS.peachjam.icon, '🫙');
 });
 
 test('album config: 12 × 6 = 72 unique keepsakes and emoji; prizes are level-99 decor; pages unlock at their levels', () => {

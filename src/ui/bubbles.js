@@ -7,6 +7,11 @@ export class Bubbles {
     this.world = world;
     this.map = new Map(); // id -> { el, getPos, html, cls }
     this.tmp = new THREE.Vector3();
+    // the HUD's boxes (set by main.js): a bubble that slides under the top bar or the toolbar fades, so the white
+    // bubble never sits behind the HUD's white text (read 4× a second, before any bubble moves)
+    this.hudRects = null;
+    this.rects = [];
+    this.rectsAt = -1e9;
   }
 
   set(id, getPos, html, cls = '', onClick = null) {
@@ -26,8 +31,8 @@ export class Bubbles {
     b.getPos = getPos;
     b.onClick = onClick;
     b.seen = true;
-    if (b.html !== html) { b.inner.innerHTML = html; b.html = html; }
-    if (b.cls !== cls) { b.inner.className = 'bubble ' + cls; b.cls = cls; }
+    if (b.html !== html) { b.inner.innerHTML = html; b.html = html; b.w = 0; }
+    if (b.cls !== cls) { b.inner.className = 'bubble ' + cls; b.cls = cls; b.w = 0; }
   }
 
   // call before a batch of set() calls; then sweep() removes bubbles not set this round
@@ -37,7 +42,10 @@ export class Bubbles {
   }
 
   update() {
-    const cam = this.world.camera;
+    // layout reads first (the HUD's boxes, new bubbles' sizes), then the writes
+    const now = performance.now();
+    if (this.hudRects && now - this.rectsAt > 250) { this.rects = this.hudRects(); this.rectsAt = now; }
+    for (const b of this.map.values()) if (!b.w && b.el.style.display !== 'none') { b.w = b.inner.offsetWidth; b.h = b.inner.offsetHeight + 8; }
     for (const b of this.map.values()) {
       const p = b.getPos(this.tmp);
       if (!p) { b.el.style.display = 'none'; continue; }
@@ -45,7 +53,9 @@ export class Bubbles {
       if (!s.visible) { b.el.style.display = 'none'; continue; }
       b.el.style.display = '';
       b.el.style.transform = `translate(${s.x.toFixed(1)}px, ${s.y.toFixed(1)}px) translate(-50%, -100%)`;
+      const hw = (b.w || 40) / 2, top = s.y - (b.h || 40);
+      const under = this.rects.some((r) => s.x + hw > r.left && s.x - hw < r.right && s.y > r.top && top < r.bottom);
+      if (under !== !!b.under) { b.under = under; b.el.classList.toggle('under-hud', under); }
     }
-    void cam;
   }
 }
