@@ -14,6 +14,7 @@ export class Bubbles {
     if (!b) {
       const el = document.createElement('div');
       el.className = 'bubble-anchor';
+      el.dataset.guide = 'bubble:' + id; // a guide can point at it: bubble:o<objectId>, bubble:a<animalId>, bubble:v<visitorId>
       const inner = document.createElement('div');
       el.appendChild(inner);
       el.addEventListener('pointerdown', (e) => { e.stopPropagation(); });

@@ -5,7 +5,9 @@ import {
   CHORES, WAGON, PROJECTS, PROJECT_REWARD, MAX_CROP_SPEEDUP, xpToNext,
   ITEMS, CROPS, ANIMALS, RECIPES, OBJECTS, QUESTS, REPEAT_QUESTS, ORDERS, START,
   xpForLevel, producibleItems, levelUpReward,
+  CHAPTERS, QUEST_MIGRATION_V3, V2_QUEST_COUNT, GUIDE, TUTORIAL, FEATURE_TIPS, tutorialTile,
 } from './config.js';
+import * as layout from './layout.js';
 
 const SAVE_KEY = 'sunny-acres-save-v1';
 const BACKUP_KEY = 'sunny-acres-save-v1-backup';
@@ -17,7 +19,8 @@ const V1 = {
   animals: { chicken: 2, cow: 4, sheep: 6 },
   recipes: { bread: 3, cookie: 3, pie: 3, butter: 5, cheese: 5, sweater: 7 },
 };
-const SAVE_VERSION = 2;
+const SAVE_VERSION = 3;
+const MODES = ['guided', 'coached', 'independent']; // the tutorial only ever moves forward
 const DAY_MS = 86400000;
 
 export class Emitter {
@@ -75,7 +78,7 @@ export class Game extends Emitter {
       orders: [],
       visitors: [],
       nextVisitorAt: now + VISITORS.firstDelay * 1000,
-      quest: { index: 0, progress: 0, notified: false },
+      quest: { index: 0, qid: QUESTS[0].id, progress: 0, notified: false }, // qid lets a reordered list heal the index
       daily: { lastDay: null, streak: 0 },
       achievements: {}, // id -> tiers claimed
       mastery: {}, // crop -> harvested count
@@ -88,7 +91,12 @@ export class Game extends Emitter {
       lastSeen: now,
       nextId: 1,
       stats: { harvested: 0, orders: 0 },
-      settings: { sound: true, music: true },
+      settings: { sound: true, music: true, hints: 'glow', tapHarvest: true },
+      // LEGACY defaults (old saves get these via migrate's fill-in): no tour, no new-farm assists.
+      // mode: 'guided' → 'coached' → 'independent'; reveal: 'all' or the HUD keys shown so far;
+      // seen: one-time lines/tips/interrupts; net: when the safety net last paid out
+      tutorial: { v: 1, mode: 'independent', startedAt: 0, seen: {}, reveal: 'all', freeFinishUsed: true, firstVisitorDone: true, net: 0, t: {} },
+      gifts: [], // chapter-chest decor waiting to be placed (object types)
       createdAt: now,
     };
   }
@@ -110,14 +118,22 @@ export class Game extends Emitter {
     addObj('flowers', lo + 4, lo + 3);
     addObj('flowers', lo + 4, lo + 1);
     addObj('bush', lo + 1, lo + 14);
-    // starter field: a couple of rows of wheat, some almost ready
-    const g = CROPS.wheat.growTime * 1000;
+    // starter field: two rows of wheat, all ripe so the very first tap harvests
+    const ripe = Math.max(CROPS.wheat.growTime * 1000, 60000);
     for (let x = 0; x < 3; x++) {
       for (let z = 0; z < 2; z++) {
-        s.soil[key(lo + 6 + x, lo + 6 + z)] = { crop: { type: 'wheat', plantedAt: now - (z === 0 ? g - 1500 : g * 0.4) } };
+        s.soil[key(lo + 6 + x, lo + 6 + z)] = { crop: { type: 'wheat', plantedAt: now - ripe } };
       }
     }
+    // the farm has "gone a bit wild": weeds, stones and stumps to tidy up for a tiny reward
+    for (const [type, dx, dz] of TUTORIAL.debris) {
+      const [x, z] = tutorialTile([dx, dz]);
+      s.objects.push({ id: s.nextId++, type, x, z, rot: 0, jobs: [] });
+    }
     s.inventory = { ...START.inventory };
+    // a new farm gets the guided tour and its once-per-save assists
+    s.tutorial = { ...s.tutorial, mode: 'guided', startedAt: now, reveal: [], freeFinishUsed: false, firstVisitorDone: false };
+    s.settings.hints = 'full';
     return s;
   }
 
@@ -145,6 +161,8 @@ export class Game extends Emitter {
     for (const [k, v] of Object.entries(blank)) if (s[k] === undefined) s[k] = v;
     for (const k of Object.keys(STORAGE)) if (s.storage[k] === undefined) s.storage[k] = 0;
     s.stats = { ...blank.stats, ...s.stats };
+    s.settings = { ...blank.settings, ...s.settings };
+    s.tutorial = { ...blank.tutorial, ...s.tutorial };
     if (s.version < 2) {
       // v1 had no storage building: give one, next to the farmhouse if possible
       this.s = s;
@@ -184,17 +202,64 @@ export class Game extends Emitter {
       // the scripted goal list changed: map the v1 position to the closest v2 goal
       const QMAP = [0, 0, 0, 0, 4, 4, 6, 7, 8, 13, 11, 12, 9, 14, 15, 17];
       const qi = s.quest?.index || 0;
-      s.quest = { index: qi < QMAP.length ? QMAP[qi] : QUESTS.length, progress: 0 };
+      s.quest = { index: qi < QMAP.length ? QMAP[qi] : V2_QUEST_COUNT, progress: 0 };
       // a little welcome-back gift for veterans
       s.gems = (s.gems || 0) + 5 + s.level;
       s.version = 2;
     }
+    if (s.version < 3) {
+      // the scripted goal list was rewritten: map the v2 position to the same goal by id;
+      // endless repeat goals keep their place in the rotation and their progress
+      const q = s.quest || { index: 0, progress: 0 };
+      const old = q.index || 0;
+      if (old >= V2_QUEST_COUNT) {
+        const index = QUESTS.length + (old - V2_QUEST_COUNT);
+        if (q.snap && q.snap.index === old) q.snap.index = index;
+        else delete q.snap;
+        s.quest = { ...q, index, qid: this.qidFor(index) };
+      } else {
+        const id = QUEST_MIGRATION_V3[old];
+        const index = Math.max(0, QUESTS.findIndex((x) => x.id === id));
+        s.quest = { index, qid: QUESTS[index].id, progress: 0, notified: false };
+      }
+      // established farms skip the tour: coached (or on their own), everything visible
+      const t = s.tutorial;
+      t.mode = s.level >= 10 || s.quest.index >= QUESTS.length ? 'independent' : 'coached';
+      t.reveal = 'all';
+      t.seen = { ...t.seen, welcome: true };
+      for (const k of TUTORIAL.ch1Lines) t.seen['line:' + k] = true;
+      if (s.level >= 5) t.seen.siloFull = t.seen.barnFull = t.seen.firstDrop = true;
+      if (s.level >= 6) t.seen.slot6 = true;
+      if (s.level >= 7) t.seen.firstVisitor = true;
+      for (const lvl of Object.keys(FEATURE_TIPS)) if (+lvl <= s.level) t.seen['tip:' + lvl] = true;
+      s.version = 3;
+    }
+    this.healQuest(s);
     return s;
+  }
+
+  // quest.qid of a quest index: the scripted goal's id, or 'repeat:n' for the endless ones
+  qidFor(index) {
+    return index < QUESTS.length ? QUESTS[index].id : 'repeat:' + (index - QUESTS.length);
+  }
+
+  // Re-derive quest.index from quest.qid, so saves survive goals being added or reordered.
+  healQuest(s) {
+    const q = s.quest;
+    if (!q) return;
+    if (typeof q.qid !== 'string') { q.qid = this.qidFor(q.index || 0); return; }
+    let index = -1;
+    if (q.qid.startsWith('repeat:')) index = QUESTS.length + (parseInt(q.qid.slice(7), 10) || 0);
+    else index = QUESTS.findIndex((x) => x.id === q.qid);
+    if (index < 0 || index === q.index) return;
+    if (q.snap && q.snap.index === q.index) q.snap.index = index;
+    q.index = index;
   }
 
   save() {
     if (!this.storage || this.resetting) return;
     this.s.lastSeen = Math.max(this.s.lastSeen || 0, this.clock());
+    if (this.s.quest) this.s.quest.qid = this.qidFor(this.s.quest.index);
     try { this.storage.setItem(SAVE_KEY, JSON.stringify(this.s)); } catch (e) { /* storage may be unavailable */ }
   }
 
@@ -549,6 +614,16 @@ export class Game extends Emitter {
     return true;
   }
 
+  // ------------------------------------------------------------ layout helpers (see layout.js)
+  // pred(soil, x, z) → bool; returns [[x, z], …] in BFS order (distance, then z, then x)
+  patchTiles(x, z, pred, max = TUTORIAL.patchMax) { return layout.patchTiles(this, x, z, pred, max); }
+  // plants `crop` on the empty patch at (x, z), one plant() per tile; returns the planted [x, z]s
+  plantPatch(x, z, crop, cap = TUTORIAL.patchMax) { return layout.plantPatch(this, x, z, crop, cap); }
+  // the tidiest free spot for a new building near the farm core: { x, z, rot } or null
+  smartSpot(type, rot = 0, near = null) { return layout.smartSpot(this, type, rot, near); }
+  // up to n grass tiles that grow the field neatly: [[x, z], …]
+  suggestPlowSpots(n = 2) { return layout.suggestPlowSpots(this, n); }
+
   // ------------------------------------------------------------ mastery
   masteryStars(type) {
     const n = this.s.mastery[type] || 0;
@@ -609,7 +684,7 @@ export class Game extends Emitter {
 
   moveObject(id, x, z, rot) {
     const o = this.objById.get(id);
-    if (!o) return false;
+    if (!o || OBJECTS[o.type].kind === 'debris') return false;
     if (!this.canPlace(o.type, x, z, rot, id)) return false;
     const dx = x - o.x, dz = z - o.z;
     o.x = x; o.z = z; o.rot = rot;
@@ -632,6 +707,45 @@ export class Game extends Emitter {
     if (def.kind === 'tree' && this.treeState(o) === 'dead') this.rollDrop('clearTree', def.harvests * def.harvestXp);
     this.saveSoon();
     return refund;
+  }
+
+  // Tidy up a weed, stone or stump: a tiny one-off reward (no materials, no drops).
+  clearDebris(id) {
+    const o = this.objById.get(id);
+    const def = o && OBJECTS[o.type];
+    if (!def || def.kind !== 'debris') return null;
+    this.s.objects = this.s.objects.filter((x) => x.id !== id);
+    this.rebuildOccupancy();
+    this.emit('objectRemoved', o);
+    const { coins = 0, xp = 0 } = def.clear || {};
+    if (coins) this.addCoins(coins, false);
+    if (xp) this.addXp(xp);
+    this.bumpStat('debris');
+    const res = { id, type: o.type, x: o.x, z: o.z, coins, xp };
+    this.emit('debrisCleared', res);
+    this.saveSoon();
+    return res;
+  }
+
+  debris() { return this.s.objects.filter((o) => OBJECTS[o.type].kind === 'debris'); }
+
+  // Put up a chapter-chest gift: free, no XP, ignores level and building limits. It is marked
+  // free, so removing it later refunds nothing. Uses up one matching entry of s.gifts.
+  placeGift(type, x, z, rot = 0) {
+    const gifts = this.s.gifts || [];
+    const i = gifts.findIndex((gf) => (typeof gf === 'string' ? gf : gf?.type) === type);
+    if (i < 0 || !OBJECTS[type] || !this.canPlace(type, x, z, rot)) return null;
+    gifts.splice(i, 1);
+    const o = { id: this.s.nextId++, type, x, z, rot, jobs: [], free: true };
+    if (OBJECTS[type].kind === 'tree') o.plantedAt = this.now();
+    this.s.objects.push(o);
+    this.rebuildOccupancy();
+    this.lastPlaceCost = 0;
+    this.emit('objectAdded', o);
+    this.emit('gifts', this.s.gifts);
+    this.progressQuest('build', type, 1);
+    this.saveSoon();
+    return o;
   }
 
   // ------------------------------------------------------------ fruit trees
@@ -728,6 +842,7 @@ export class Game extends Emitter {
     if (f) this.addItem(f.item, -f.qty);
     a.readyAt = this.now() + def.time * 1000;
     this.emit('animalChanged', a);
+    this.progressQuest('feed', a.type, 1);
     this.saveSoon();
     return true;
   }
@@ -786,6 +901,7 @@ export class Game extends Emitter {
       if (!this.roomFor(j.recipe, 1, collected > 0)) break;
       got[j.recipe] = (got[j.recipe] || 0) + 1;
       this.addItem(j.recipe, 1);
+      if (j.recipe === TUTORIAL.freeFinish.recipe && this.s.tutorial) this.s.tutorial.freeFinishUsed = true;
       xp += RECIPES[j.recipe].xp;
       this.progressQuest('produce', j.recipe, 1);
       this.bumpStat('produce');
@@ -804,18 +920,29 @@ export class Game extends Emitter {
   // ------------------------------------------------------------ gems / speed-ups
   speedUpCost(msLeft) { return msLeft <= 0 ? 0 : GEMS.speedUp(msLeft / 1000); }
 
-  speedUpFactory(o) {
+  // opts.free: use the new farm's one free finish (see freeFinishAvailable) instead of gems
+  speedUpFactory(o, opts = {}) {
     const now = this.now();
     const j = o.jobs.find((x) => x.endAt > now);
     if (!j) return false;
     const left = j.endAt - now;
-    const cost = this.speedUpCost(left);
-    if (!this.spendGems(cost)) return false;
+    if (opts.free) {
+      if (!this.freeFinishAvailable(o)) return false;
+      this.s.tutorial.freeFinishUsed = true;
+    } else if (!this.spendGems(this.speedUpCost(left))) return false;
     // the whole queue after this job shifts forward too
     for (const x of o.jobs) if (x.endAt >= j.endAt) x.endAt -= left;
     this.emit('factoryChanged', o);
     this.saveSoon();
     return true;
+  }
+
+  // A new farm's first bread job can be finished for free, once (it saves at most one bake).
+  freeFinishAvailable(o) {
+    if (!o || this.s.tutorial?.freeFinishUsed !== false) return false;
+    const now = this.now();
+    const j = o.jobs?.find((x) => x.endAt > now);
+    return !!j && j.recipe === TUTORIAL.freeFinish.recipe;
   }
 
   speedUpAnimal(a) {
@@ -929,6 +1056,47 @@ export class Game extends Emitter {
     this.ensureVisitors();
     this.ensureChores();
     this.ensureWagon();
+    this.checkSafetyNet();
+    this.syncReveal();
+  }
+
+  // ------------------------------------------------------------ safety net ("Mabel's pocket money")
+  // A tiny gift for a farm that is truly stuck: can't afford any seed, nothing growing or
+  // producing, nothing to sell or deliver. At most once per cooldown; never fires in normal play.
+  cheapestSeedCost() {
+    let min = Infinity;
+    for (const [id, c] of Object.entries(CROPS)) if (this.isUnlocked('crops', id)) min = Math.min(min, c.seedCost);
+    return min;
+  }
+
+  isStuck() {
+    const now = this.now();
+    if (this.s.coins >= this.cheapestSeedCost()) return false;
+    if (Object.values(this.s.soil).some((soil) => soil.crop)) return false;
+    if (Object.entries(this.s.inventory).some(([i, n]) => n > 0 && ITEMS[i]?.cat !== 'material')) return false;
+    if (this.s.animals.some((a) => this.animalState(a, now) !== 'hungry')) return false;
+    for (const o of this.s.objects) {
+      const kind = OBJECTS[o.type]?.kind;
+      if (kind === 'factory' && o.jobs?.length) return false;
+      if (kind === 'tree' && this.treeState(o, now) !== 'dead') return false;
+    }
+    if (this.s.orders.some((o) => !o.waitUntil && this.hasItems(o.items))) return false;
+    if (this.questDone()) return false;
+    return true;
+  }
+
+  checkSafetyNet() {
+    const t = this.s.tutorial;
+    if (!t) return null;
+    const { coins, cooldownH } = TUTORIAL.safetyNet;
+    const now = this.now();
+    if (t.net && now - t.net < cooldownH * 3600000) return null;
+    if (!this.isStuck()) return null;
+    t.net = now;
+    this.addCoins(coins, false);
+    this.emit('safetyNet', { coins });
+    this.saveSoon();
+    return coins;
   }
 
   fulfillOrder(id) {
@@ -993,16 +1161,31 @@ export class Game extends Emitter {
     const pool = this.orderPool();
     const npcs = this.availableNpcs();
     if (!pool.length || !npcs.length) return null;
-    const npc = npcs[Math.floor(Math.random() * npcs.length)];
-    // visitors prefer their favourite category, else anything
-    const fav = pool.filter((i) => npc.likes.includes(ITEMS[i].cat));
-    const from = fav.length ? fav : pool;
-    const item = from[Math.floor(Math.random() * from.length)];
-    let qty = rand(1, ORDERS.maxQty(ITEMS[item].price, this.s.level));
-    while (ITEMS[item].price * qty < VISITORS.minValue(this.s.level) && qty < 99) qty++;
+    const minValue = VISITORS.minValue(this.s.level);
+    // a new farm's first visitor is Grandma Mabel, asking for something you already hold
+    const first = this.s.tutorial && !this.s.tutorial.firstVisitorDone && npcs.find((n) => n.id === GUIDE.npc);
+    const npc = first || npcs[Math.floor(Math.random() * npcs.length)];
+    let item = null, qty = 0;
+    if (first) {
+      this.s.tutorial.firstVisitorDone = true;
+      let best = 0;
+      for (const i of pool) {
+        const v = this.count(i) * ITEMS[i].price;
+        if (v >= minValue && v > best) { best = v; item = i; }
+      }
+      if (item) qty = Math.ceil(minValue / ITEMS[item].price);
+    }
+    if (!item) {
+      // visitors prefer their favourite category, else anything
+      const fav = pool.filter((i) => npc.likes.includes(ITEMS[i].cat));
+      const from = fav.length ? fav : pool;
+      item = from[Math.floor(Math.random() * from.length)];
+      qty = rand(1, ORDERS.maxQty(ITEMS[item].price, this.s.level));
+      while (ITEMS[item].price * qty < minValue && qty < 99) qty++;
+    }
     const value = ITEMS[item].price * qty;
     const bonus = (this.s.hearts[npc.id] || 0) >= VISITORS.maxHearts ? 1 + VISITORS.heartBonusPay : 1;
-    return {
+    const v = {
       id: this.s.nextId++,
       npc: npc.id,
       item,
@@ -1012,6 +1195,8 @@ export class Game extends Emitter {
       arrivedAt,
       leavesAt: null, // villagers wait until you serve or dismiss them
     };
+    if (first) v.first = true; // the UI shows VISITORS.firstLine for her
+    return v;
   }
 
   serveVisitor(id) {
@@ -1320,6 +1505,85 @@ export class Game extends Emitter {
 
   achievementsReady() { return ACHIEVEMENTS.filter((a) => this.achievementStatus(a).ready).length; }
 
+  // ------------------------------------------------------------ tutorial state (presentation only)
+  // The guide UI reads and writes these; no game rule depends on them.
+  tutorialMode() { return this.s.tutorial?.mode || 'independent'; }
+
+  // guided → coached → independent; never moves backwards
+  setTutorialMode(mode) {
+    const t = this.s.tutorial;
+    if (!t || MODES.indexOf(mode) <= MODES.indexOf(t.mode)) return false;
+    t.mode = mode;
+    this.emit('tutorial', { mode });
+    this.syncReveal();
+    this.saveSoon();
+    return true;
+  }
+
+  // one-time flags: 'welcome', 'line:<key>', 'tip:<level>', interrupts ('siloFull', 'firstDrop', …)
+  hasSeen(key) { return !!this.s.tutorial?.seen?.[key]; }
+
+  markSeen(key) {
+    const t = this.s.tutorial;
+    if (!t || t.seen[key]) return false;
+    t.seen[key] = true;
+    this.saveSoon();
+    return true;
+  }
+
+  // Skip / "I've farmed before": coached from now on, whole HUD shown, tour lines done.
+  skipTutorial() {
+    const t = this.s.tutorial;
+    if (!t) return;
+    t.seen.welcome = true;
+    for (const k of TUTORIAL.ch1Lines) t.seen['line:' + k] = true;
+    this.setTutorialMode('coached');
+    this.reveal('all');
+    this.saveSoon();
+  }
+
+  // Progressive HUD reveal. Keys: quest, barn, level, gems, orders, shop, tools, today, trophy.
+  // Everything shows once the tour is over, from level 5, or 2 hours into a new farm.
+  revealAll() {
+    const t = this.s.tutorial;
+    if (!t || t.reveal === 'all' || t.mode !== 'guided') return true;
+    return this.s.level >= TUTORIAL.revealAfter.level || this.now() - (t.startedAt || 0) > TUTORIAL.revealAfter.hours * 3600000;
+  }
+
+  isRevealed(key) {
+    const r = this.s.tutorial?.reveal;
+    return this.revealAll() || (Array.isArray(r) && r.includes(key));
+  }
+
+  // 'all', or the list of keys revealed so far
+  revealedKeys() {
+    const r = this.s.tutorial?.reveal;
+    return this.revealAll() ? 'all' : [...(r || [])];
+  }
+
+  reveal(keys) {
+    const t = this.s.tutorial;
+    if (!t || t.reveal === 'all') return false;
+    if (keys === 'all') {
+      t.reveal = 'all';
+      this.emit('reveal', 'all');
+      this.saveSoon();
+      return true;
+    }
+    const add = [].concat(keys).filter((k) => k && !t.reveal.includes(k));
+    if (!add.length) return false;
+    t.reveal.push(...add);
+    this.emit('reveal', add);
+    this.saveSoon();
+    return true;
+  }
+
+  // turns the reveal list into 'all' once its time has come (runs with ensureOrders)
+  syncReveal() {
+    const t = this.s.tutorial;
+    if (t && t.reveal !== 'all' && this.revealAll()) this.reveal('all');
+  }
+
   // ------------------------------------------------------------ quests
   currentQuest() {
     const i = this.s.quest.index;
@@ -1344,6 +1608,8 @@ export class Game extends Emitter {
     else if (q.event === 'build') p = Math.max(p, this.objectCount(q.filter));
     else if (q.event === 'buyAnimal') p = Math.max(p, this.s.animals.filter((a) => a.type === q.filter).length);
     else if (q.event === 'expand') p = Math.max(p, (this.s.landSize - START_LAND) / LAND_STEP);
+    else if (q.event === 'feed') p = Math.max(p, this.s.animals.filter((a) => (!q.filter || a.type === q.filter) && this.animalState(a) !== 'hungry').length);
+    else if (q.event === 'storage') p = Math.max(p, q.filter ? this.s.storage[q.filter] || 0 : Math.max(...Object.keys(STORAGE).map((id) => this.s.storage[id] || 0)));
     return Math.min(p, q.count);
   }
 
@@ -1379,15 +1645,40 @@ export class Game extends Emitter {
     const q = this.currentQuest();
     // advance first so rewards can't count toward the next goal, then pay out as non-"earned" coins
     this.s.quest.index++;
+    this.s.quest.qid = this.qidFor(this.s.quest.index);
     this.s.quest.progress = 0;
     this.s.quest.notified = false;
     if (q.reward.coins) this.addCoins(q.reward.coins, false);
     if (q.reward.xp) this.addXp(q.reward.xp);
     if (q.reward.gems) this.addGems(q.reward.gems);
     for (const [i, n] of Object.entries(q.reward.items || {})) if (this.roomFor(i, n, true)) this.addItem(i, n);
+    // the last goal of a chapter opens its chest: gems and a decoration to place for free
+    const ch = q.id && CHAPTERS.find((c) => c.last === q.id);
+    if (ch) {
+      if (ch.reward.gems) this.addGems(ch.reward.gems);
+      if (ch.reward.gift) (this.s.gifts ||= []).push(ch.reward.gift);
+      this.emit('chapter', { chapter: ch, next: CHAPTERS.find((c) => c.id === ch.id + 1) || null });
+    }
     this.checkQuest();
     this.saveSoon();
     return q;
+  }
+
+  // the current goal's chapter: { id, name, icon, done, total, last } (null for endless goals)
+  questChapter(index = this.s.quest.index) {
+    const q = QUESTS[index];
+    const ch = q && CHAPTERS.find((c) => c.id === q.chapter);
+    if (!ch) return null;
+    const list = QUESTS.filter((x) => x.chapter === ch.id);
+    const first = QUESTS.indexOf(list[0]);
+    return { id: ch.id, name: ch.name, icon: ch.icon, done: index - first, total: list.length, last: ch.last };
+  }
+
+  // true once every goal of chapter `id` has been claimed
+  chapterDone(id) {
+    const ch = CHAPTERS.find((c) => c.id === id);
+    const i = ch ? QUESTS.findIndex((x) => x.id === ch.last) : -1;
+    return i >= 0 && this.s.quest.index > i;
   }
 }
 

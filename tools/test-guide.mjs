@@ -1,0 +1,636 @@
+// Guide planner tests (Node, no browser): part of `npm test`.
+// Covers the planner contract (§6.3), the tutorial beats it drives (§1.3), reserves, blocks, need(),
+// interrupts, graduation, modes, the daily auto-popup rule, a headless guide-follower that plays
+// the whole scripted list through SimUI (tools/simui.mjs) at 4 s per tap, and a 30-seed wander fuzz.
+import assert from 'node:assert/strict';
+import { Game } from '../src/game/state.js';
+import * as CFG from '../src/game/config.js';
+import {
+  planStep, recommendIdle, reserves, questBlock, need, earn, PLANNERS, shouldAutoShowDaily, nextMode, isGuideKey,
+  pendingInterrupt, graduationPending, plantCap, placementSpot, levelUpGo, pendingTip, seedList, questCardInfo, hardBeat,
+} from '../src/game/guide.js';
+import { GuideFollower, SimUI } from './simui.mjs';
+
+const T0 = Date.UTC(2026, 0, 1, 8);
+let t = T0;
+const clock = () => t;
+const advance = (sec) => { t += sec * 1000; };
+
+class MemStorage {
+  constructor() { this.m = new Map(); }
+  getItem(k) { return this.m.has(k) ? this.m.get(k) : null; }
+  setItem(k, v) { this.m.set(k, String(v)); }
+  removeItem(k) { this.m.delete(k); }
+}
+
+const tests = [];
+const test = (name, fn) => tests.push({ name, fn });
+const fresh = (storage = null) => new Game({ clock, storage });
+const qIndex = (id) => CFG.QUESTS.findIndex((q) => q.id === id);
+const S = CFG.TUTORIAL.startLo;
+const put = (g, type, x, z) => { const o = { id: g.s.nextId++, type, x, z, rot: 0, jobs: [] }; g.s.objects.push(o); g.rebuildOccupancy(); return o; };
+const setQuest = (g, id) => { const i = qIndex(id); g.s.quest = { index: i, qid: id, progress: 0, notified: false }; };
+const setLevel = (g, L) => { g.s.level = L; g.s.xp = CFG.xpForLevel(L); };
+// every data-guide key a step (and its Meanwhile) mentions
+const keysOf = (s) => (s ? [s.target?.ui, ...(s.chain || []), ...keysOf(s.meanwhile)].filter(Boolean) : []);
+const assertKeys = (s, where = '') => { for (const k of keysOf(s)) assert.ok(isGuideKey(k), `bad guide key ${k} ${where}`); };
+// deterministic Math.random for one block of code
+const seeded = (seed, fn) => {
+  const orig = Math.random;
+  let s = seed >>> 0;
+  Math.random = () => { s = (s + 0x6d2b79f5) | 0; let x = Math.imul(s ^ (s >>> 15), 1 | s); x = (x + Math.imul(x ^ (x >>> 7), 61 | x)) ^ x; return ((x ^ (x >>> 14)) >>> 0) / 4294967296; };
+  try { return fn(); } finally { Math.random = orig; }
+};
+// a coached farm (tour done) at the given goal
+const coachedAt = (id, L = 1) => { const g = fresh(); g.skipTutorial(); setQuest(g, id); setLevel(g, L); return g; };
+
+// ---------------------------------------------------------------- contract
+test('every scripted and repeat goal event has a planner', () => {
+  const events = new Set(CFG.QUESTS.map((q) => q.event));
+  for (const make of CFG.REPEAT_QUESTS) events.add(make(0, 10).event);
+  for (const e of events) assert.equal(typeof PLANNERS[e], 'function', `planner for ${e}`);
+  for (const e of ['harvest', 'plant', 'plow', 'order', 'build', 'buyAnimal', 'feed', 'collect', 'produce', 'expand', 'visitor', 'storage', 'fruit', 'earn', 'level', 'crate', 'gift']) {
+    assert.equal(typeof PLANNERS[e], 'function', `§6.3 planner ${e}`);
+  }
+});
+
+test('planner: every scripted goal gets a real step on a farm fast-forwarded to it (any coins, panels, tools)', () => {
+  const uis = [{}, { tool: 'plow' }, { panel: { id: 'shop', tab: 'land', ref: null, age: 9 } }, { panel: { id: 'orders', tab: 'orders', ref: null, age: 1 } }, { popover: { x: S + 6, z: S + 6 } }];
+  for (const q of CFG.QUESTS) {
+    for (const coins of [0, 60, 5000]) {
+      for (const mode of ['guided', 'coached']) {
+        const g = fresh();
+        g.markSeen('welcome');
+        if (mode === 'coached') g.skipTutorial();
+        setQuest(g, q.id);
+        setLevel(g, Math.max(1, CFG.questLevel(q)));
+        g.s.coins = coins;
+        for (const ui of uis) {
+          const s = planStep(g, ui, { cache: false });
+          assert.notEqual(s.kind, 'none', `${q.id} ${mode} coins ${coins} ${JSON.stringify(ui)} → ${s.key}`);
+          assert.ok(s.key && s.icon != null && s.label, `step has key/icon/label (${s.key})`);
+          assertKeys(s, `(${q.id})`);
+          if (s.kind === 'wait') assert.ok(s.meanwhile, 'a wait carries a Meanwhile step');
+        }
+      }
+    }
+  }
+});
+
+test('planner: the endless goals after the list get real steps too', () => {
+  for (let n = 0; n < CFG.REPEAT_QUESTS.length * 2; n++) {
+    const g = fresh();
+    g.skipTutorial();
+    setLevel(g, 12);
+    g.s.quest = { index: CFG.QUESTS.length + n, progress: 0, notified: false };
+    const s = planStep(g, {}, { cache: false });
+    assert.notEqual(s.kind, 'none', `${g.currentQuest().text} → ${s.key}`);
+    assertKeys(s);
+  }
+});
+
+test('planner: a new farm opens with Mabel; B1–B3 are hard beats; plant steps carry the guided cap', () => {
+  const g = fresh();
+  let s = planStep(g, {});
+  assert.equal(s.key, 'welcome');
+  assert.equal(s.target.ui, 'guide:next');
+  assert.equal(s.modal, 'guide');
+  assert.equal(s.stepKey, 'welcome');
+  assert.equal(s.say, CFG.TUTORIAL.lines.welcome);
+  assert.equal(s.pointer, false, 'no finger on the welcome card');
+  assert.equal(hardBeat(g), false, 'no hard gate before the welcome');
+  g.markSeen('welcome');
+  // B1: the 6 ripe starter tiles, hard gate, Mabel's harvest line
+  s = planStep(g, {});
+  assert.equal(s.kind, 'world');
+  assert.equal(s.target.world, 'tiles');
+  assert.equal(s.target.tiles.length, 6);
+  assert.equal(s.gate, 'hard');
+  assert.equal(s.stepKey, 'harvest');
+  assert.deepEqual(s.reveal || [], [], 'nothing revealed before the first harvest');
+  const sim = new SimUI(g);
+  sim.apply(s);
+  assert.ok(g.questDone(), 'one tap harvests the patch (12 wheat)');
+  // B2: claim, hard gate, quest card + barn + level box revealed
+  s = planStep(g, sim.view());
+  assert.equal(s.target.ui, 'quest:claim');
+  assert.equal(s.gate, 'hard');
+  assert.equal(s.stepKey, 'claim');
+  for (const k of ['quest', 'barn', 'level']) assert.ok(s.reveal.includes(k), `reveals ${k}`);
+  g.reveal(s.reveal);
+  sim.apply(s);
+  // B3: plant with cap 6 (the goal's count), hard gate; one crop unlocked → no popover
+  s = planStep(g, sim.view());
+  assert.equal(s.key, 'plant:wheat');
+  assert.equal(s.cap, 6);
+  assert.equal(s.gate, 'hard');
+  assert.equal(s.chain, undefined, 'no seed popover at L1');
+  sim.apply(s);
+  assert.ok(g.questDone());
+  // B3b: claim → L2, soft now
+  s = planStep(g, sim.view());
+  assert.equal(s.target.ui, 'quest:claim');
+  assert.equal(s.gate, 'soft');
+  assert.equal(s.stepKey, 'claimL2');
+  sim.apply(s);
+  assert.equal(g.s.level, 2);
+  assert.equal(sim.ui.modal, 'levelup');
+  s = planStep(g, sim.view());
+  assert.equal(s.target.ui, 'modal:levelup:ok');
+  assert.equal(s.stepKey, 'levelup2');
+  assert.equal(s.say, CFG.TUTORIAL.lines.levelup2);
+  // the cap only applies to the guided plant goal's own crop
+  assert.equal(plantCap(g, 'carrot'), CFG.TUTORIAL.patchMax);
+  const c = coachedAt('plant');
+  assert.equal(plantCap(c, 'wheat'), CFG.TUTORIAL.patchMax, 'coached plants up to 24');
+});
+
+test('planner: B4–B12 point where the tour says, with the tour lines', () => {
+  // play the tour and record the first step for each goal/target
+  const seen = {};
+  const g2 = fresh();
+  const sim2 = new SimUI(g2);
+  const f2 = new GuideFollower(g2, { sim: sim2, advance, onStep: (s) => { const k = `${s.quest}|${s.target?.ui || s.target?.world || s.kind}`; seen[k] ??= s; } });
+  f2.run({ maxSec: 15 * 60, until: (gg) => gg.tutorialMode() !== 'guided' });
+  const board = g2.s.objects.find((o) => o.type === 'orderboard');
+  const step = (quest, target) => seen[`${quest}|${target}`];
+  assert.equal(step('order1', `bubble:o${board.id}`)?.stepKey, 'order1');
+  assert.equal(step('order1', `bubble:o${board.id}`)?.fallback, 'btn:orders');
+  assert.ok(Object.keys(seen).some((k) => k.startsWith('order1|order:deliver:') && seen[k].stepKey === 'order1Panel'));
+  assert.deepEqual(step('coop', 'btn:shop')?.chain, ['btn:shop', 'shop:tab:buildings', 'shop:buy:coop', 'place:ok']);
+  assert.equal(step('coop', 'shop:buy:coop')?.stepKey, 'coopShop');
+  assert.equal(step('coop', 'place:ok')?.stepKey, 'coopPlace');
+  assert.equal(step('chickens', 'pen:buy')?.stepKey, 'chickensPanel');
+  assert.equal(step('plow', 'tool:plow')?.stepKey, 'plow');
+  const ghosts = step('plow', 'ghostPlots');
+  assert.equal(ghosts?.stepKey, 'plowTiles');
+  assert.deepEqual(ghosts.target.tiles, CFG.TUTORIAL.plowSuggest.map(CFG.tutorialTile), 'ghost plots at TUTORIAL.plowSuggest');
+  assert.deepEqual(ghosts.target.tiles, fresh().suggestPlowSpots(2), 'and they match suggestPlowSpots(2)');
+  assert.ok(Object.keys(seen).some((k) => k.startsWith('carrots|seed:carrot')), 'carrots via the seed popover');
+  const eggsWait = Object.values(seen).find((s) => s.quest === 'eggs' && s.kind === 'wait');
+  assert.equal(eggsWait.meanwhile.stepKey, 'eggsMeanwhile');
+  const fin = step('bread', 'factory:finish');
+  assert.ok(fin && fin.free && fin.stepKey === 'breadFree', 'B12 free finish');
+  assert.equal(step('bakery', 'shop:buy:bakery')?.quest, 'bakery');
+  // placement starts on the tutorial lots
+  const coop = g2.s.objects.find((o) => o.type === 'coop'), bakery = g2.s.objects.find((o) => o.type === 'bakery');
+  assert.deepEqual([coop.x, coop.z], CFG.tutorialTile(CFG.TUTORIAL.lots.coop));
+  assert.deepEqual([bakery.x, bakery.z], CFG.tutorialTile(CFG.TUTORIAL.lots.bakery));
+  assert.equal(g2.s.tutorial.freeFinishUsed, true, 'the free bake was used');
+  // every guided step speaks a real line
+  for (const s of Object.values(seen)) if (s.stepKey) assert.ok(CFG.TUTORIAL.lines[s.stepKey], `line ${s.stepKey}`);
+});
+
+test('planner: B12 short of wheat speaks about the wheat, then about the Bakery', () => {
+  const g = fresh();
+  g.markSeen('welcome');
+  setQuest(g, 'bread');
+  setLevel(g, 3);
+  put(g, 'bakery', ...CFG.tutorialTile(CFG.TUTORIAL.lots.bakery));
+  g.s.inventory.wheat = 0;
+  let s = planStep(g, {}, { cache: false });
+  assert.equal(s.target?.world, 'tiles', 'the ripe starter wheat first');
+  assert.equal(s.stepKey, 'breadWheat');
+  assert.equal(s.say, CFG.TUTORIAL.lines.breadWheat);
+  g.s.inventory.wheat = 3;
+  s = planStep(g, {}, { cache: false });
+  assert.ok(s.target?.ui?.startsWith('bubble:o'), 'then the Bakery');
+  assert.equal(s.stepKey, 'bread');
+});
+
+test('planner: steps are memoised per game change, game second and ui', () => {
+  const g = fresh();
+  g.markSeen('welcome');
+  const a = planStep(g, {});
+  assert.equal(planStep(g, {}), a, 'same state → same object');
+  assert.notEqual(planStep(g, { tool: 'plow' }), a, 'ui change → new step');
+  g.addCoins(1);
+  assert.notEqual(planStep(g, {}), a, 'game change → new step');
+});
+
+test('planner: another panel open > 4 s → close it; under 4 s → the opener; tiles need the Hand tool', () => {
+  const g = coachedAt('coop', 2);
+  g.s.coins = 500;
+  assert.equal(planStep(g, {}).target.ui, 'btn:shop');
+  assert.equal(planStep(g, { panel: { id: 'orders', tab: 'orders', ref: null, age: 2 } }).target.ui, 'btn:shop');
+  assert.equal(planStep(g, { panel: { id: 'orders', tab: 'orders', ref: null, age: 5 } }).target.ui, 'panel:close');
+  assert.equal(planStep(g, { panel: { id: 'shop', tab: 'decor', ref: null, age: 5 } }).target.ui, 'shop:tab:buildings');
+  assert.equal(planStep(g, { panel: { id: 'shop', tab: 'buildings', ref: null, age: 0 } }).target.ui, 'shop:buy:coop');
+  assert.equal(planStep(g, { placing: { type: 'coop', valid: true } }).target.ui, 'place:ok');
+  assert.equal(planStep(g, { placing: { type: 'coop', valid: false } }).target.world, 'ghost');
+  const h = coachedAt('harvest');
+  assert.equal(planStep(h, { tool: 'plow' }).target.ui, 'tool:hand');
+  assert.equal(planStep(h, {}).target.world, 'tiles');
+});
+
+test('planner: no room for a building → clear the debris, then the fields in its way (never a dead drag on the ghost)', () => {
+  const g = coachedAt('pasture', 5);
+  g.s.coins = 2000;
+  // a farm with every free tile plowed: the 5×5 pasture fits nowhere
+  for (let z = g.landLo(); z <= g.landHi(); z++) for (let x = g.landLo(); x <= g.landHi(); x++) if (!g.objectAt(x, z) && !g.soilAt(x, z)) g.s.soil[`${x},${z}`] = { crop: null };
+  assert.equal(g.findFreeSpot('cowbarn', 0), null);
+  const s = planStep(g, {}, { cache: false });
+  assert.equal(s.target.world, 'object', 'debris in the way goes first');
+  assert.equal(CFG.OBJECTS[g.objById.get(s.target.id).type].kind, 'debris');
+  assert.equal(planStep(g, { placing: { type: 'cowbarn', valid: false } }, { cache: false }).target.ui, 'place:cancel', 'a ghost that fits nowhere backs out');
+  const sim = new SimUI(g);
+  const keys = [];
+  const f = new GuideFollower(g, { sim, advance, onStep: (st) => { keys.push(st.key); assertKeys(st); } });
+  const r = f.run({ maxSec: 10 * 60, until: (gg) => gg.objectCount('cowbarn') > 0 });
+  assert.equal(g.objectCount('cowbarn'), 1, 'the pasture got built');
+  assert.ok(keys.some((k) => k.endsWith(':room:tool')) && keys.some((k) => k.endsWith(':room:clear')), 'via the Clear tool on the fields');
+  assert.equal(r.stalls, 0);
+  assert.deepEqual(r.deadEnds, []);
+});
+
+// ---------------------------------------------------------------- reserves, blocks, need
+test('reserves stop the planner delivering the last chicken feed', () => {
+  const g = coachedAt('orders3', 4);
+  const coop = put(g, 'coop', S + 5, S + 10);
+  for (let i = 0; i < 2; i++) g.s.animals.push({ id: g.s.nextId++, type: 'chicken', home: coop.id, readyAt: 0 });
+  for (const soil of Object.values(g.s.soil)) soil.crop = { type: 'wheat', plantedAt: t }; // nothing ripe
+  g.s.inventory = { wheat: 2 };
+  g.s.orders = [{ id: 900, items: { wheat: 2 }, coins: 6, xp: 1 }, { id: 901, waitUntil: t + 60000 }];
+  assert.deepEqual(reserves(g, { skip: g.s.orders[0] }), { wheat: 2 }, 'one feed per chicken');
+  const delivering = (s) => keysOf(s).some((k) => k === 'order:deliver:900' || k === `bubble:o${g.s.objects.find((o) => o.type === 'orderboard').id}`);
+  assert.ok(!delivering(planStep(g, {}, { cache: false })), 'the goal planner keeps the feed');
+  assert.ok(!delivering(recommendIdle(g, {})), 'so does Meanwhile');
+  assert.ok(!delivering(earn(g, {}, 50)), 'and earn');
+  g.s.inventory.wheat = 4;
+  assert.equal(planStep(g, {}, { cache: false }).order, 900, 'with spare wheat it delivers');
+});
+
+test('guided Meanwhile never suggests plowing (or chores); coached does when there is spare cash', () => {
+  const g = fresh();
+  g.markSeen('welcome');
+  setQuest(g, 'eggs');
+  setLevel(g, 3);
+  g.s.coins = 5000;
+  g.s.objects = g.s.objects.filter((o) => CFG.OBJECTS[o.type].kind !== 'debris');
+  g.rebuildOccupancy();
+  for (const soil of Object.values(g.s.soil)) soil.crop = { type: 'wheat', plantedAt: t };
+  const coop = put(g, 'coop', S + 5, S + 10);
+  g.s.animals.push({ id: g.s.nextId++, type: 'chicken', home: coop.id, readyAt: t + 100000 });
+  const idle = recommendIdle(g, {});
+  assert.notEqual(idle.action, 'plow');
+  assert.ok(!keysOf(idle).some((k) => k === 'tool:plow' || k.startsWith('today:')));
+  assert.equal(idle.key, 'busy');
+  g.skipTutorial();
+  assert.equal(recommendIdle(g, {}).action, 'plow', 'coached: spare cash and room → a new field');
+});
+
+test('questBlock: coins, level and materials, matching what the planner works on', () => {
+  const g = coachedAt('bakery', 3);
+  g.s.coins = 112;
+  assert.deepEqual(questBlock(g), { kind: 'coins', have: 112, need: 150 });
+  assert.equal(planStep(g, {}).block.kind, 'coins');
+  g.s.coins = 500;
+  assert.equal(questBlock(g), null);
+  const p = coachedAt('pasture', 4);
+  const b = questBlock(p);
+  assert.equal(b.kind, 'level');
+  assert.equal(b.level, 5);
+  assert.equal(b.need, CFG.xpToNext(4));
+  const e = coachedAt('expand', 6);
+  e.s.coins = 1000;
+  assert.deepEqual(questBlock(e).items, { plank: 1, bolt: 1 });
+  const es = planStep(e, {});
+  assert.equal(es.kind, 'wait', 'materials: no finger, a Meanwhile instead');
+  assert.equal(es.pointer, false);
+  assert.ok(es.meanwhile);
+  e.s.inventory.plank = 1; e.s.inventory.bolt = 1; // set directly (no event), so skip the memo
+  assert.equal(questBlock(e), null);
+  assert.equal(planStep(e, {}, { cache: false }).target.ui, 'btn:shop');
+  assert.equal(planStep(e, { panel: { id: 'shop', tab: 'buildings', ref: null, age: 0 } }).target.ui, 'shop:tab:land');
+  // the HUD card gets chapter + block
+  const info = questCardInfo(g, planStep(g, {}));
+  assert.equal(info.chapter.id, 1);
+  assert.equal(info.showMe, true);
+});
+
+test('need(item): crops, animal goods and goods (recipe inputs, depth ≤ 3); materials are a line only', () => {
+  const g = coachedAt('corn', 4);
+  for (const soil of Object.values(g.s.soil)) soil.crop = null;
+  g.s.coins = 100;
+  let s = need(g, {}, 'carrot');
+  assert.equal(s.action, 'plant');
+  assert.equal(s.crop, 'carrot');
+  s = need(g, {}, 'milk');
+  assert.equal(s.block?.kind, 'level', 'no cows before level 5');
+  setLevel(g, 5);
+  g.s.coins = 1000;
+  s = need(g, {}, 'milk');
+  assert.ok(keysOf(s).includes('shop:buy:cowbarn'), 'milk → build a pasture first');
+  const bakery = put(g, 'bakery', S + 11, S + 6);
+  g.s.inventory = { wheat: 10 };
+  s = need(g, {}, 'bread');
+  assert.equal(s.target.ui, `bubble:o${bakery.id}`);
+  assert.equal(s.recipe, 'bread');
+  g.s.inventory = {};
+  s = need(g, {}, 'cookie');
+  assert.ok(['plant', 'harvest'].includes(s.action) || keysOf(s).includes('shop:buy:coop'), 'cookie → its inputs');
+  const m = need(g, {}, 'plank');
+  assert.equal(m.kind, 'none');
+  assert.equal(m.pointer, false);
+  // deep chains stay finite
+  setLevel(g, 9);
+  assert.ok(need(g, {}, 'butterpop'));
+});
+
+// ---------------------------------------------------------------- interrupts, graduation, modes, daily
+test('interrupts: silo full, first drop, slot 6 and Mabel\'s visit — once each, never with hints off or in a hard beat', () => {
+  const g = coachedAt('corn', 4);
+  assert.equal(pendingInterrupt(g, {}), null);
+  g.s.inventory.wheat = Math.ceil(0.9 * g.storageCap('silo'));
+  let s = planStep(g, {});
+  assert.equal(s.why, 'interrupt');
+  assert.equal(s.interrupt, 'siloFull');
+  assert.equal(s.stepKey, 'siloFull');
+  assert.equal(s.say, CFG.TUTORIAL.lines.siloFull);
+  assert.deepEqual(s.chain, ['btn:barn', 'storage:tab:silo', 'storage:sellExtras:silo']);
+  g.s.settings.hints = 'off';
+  assert.equal(pendingInterrupt(g, {}), null, 'hints off');
+  g.s.settings.hints = 'glow';
+  g.markSeen('siloFull');
+  assert.equal(pendingInterrupt(g, {}), null, 'once');
+  s = planStep(g, { interrupt: { key: 'firstDrop', item: 'plank' } });
+  assert.equal(s.interrupt, 'firstDrop');
+  assert.equal(s.kind, 'none');
+  assert.equal(s.toast, true);
+  assert.ok(s.say.includes('🪵') && s.say.includes('Plank'), s.say);
+  setLevel(g, 6);
+  put(g, 'bakery', S + 11, S + 6);
+  s = pendingInterrupt(g, {});
+  assert.equal(s.interrupt, 'slot6');
+  g.markSeen('slot6');
+  g.s.visitors = [{ id: 77, npc: 'mabel', item: 'wheat', qty: 3, coins: 10, xp: 1, first: true }];
+  s = pendingInterrupt(g, {});
+  assert.equal(s.interrupt, 'firstVisitor');
+  assert.equal(s.target.ui, 'bubble:v77');
+  s = pendingInterrupt(g, { panel: { id: 'visitor', ref: 77, tab: null, age: 0 } });
+  assert.equal(s.target.ui, 'visitor:sell');
+  assert.equal(s.stepKey, 'firstVisitorPanel');
+  assert.ok(s.say.includes('wheat'));
+  // what she asked for is gone by now: her hello and a glow on her, never a finger on a greyed-out Sell
+  const wheat = g.s.inventory.wheat;
+  g.s.inventory.wheat = 1;
+  s = pendingInterrupt(g, { panel: { id: 'visitor', ref: 77, tab: null, age: 0 } });
+  assert.equal(s.interrupt, 'firstVisitor');
+  assert.equal(s.toast, true);
+  assert.equal(s.target.ui, 'bubble:v77');
+  g.s.inventory.wheat = wheat;
+  g.setTutorialMode('independent');
+  assert.equal(pendingInterrupt(g, {}), null, 'independent: FEATURE_TIPS only');
+  // hard beats suppress them
+  const h = fresh();
+  h.markSeen('welcome');
+  h.s.inventory.wheat = 70;
+  assert.equal(hardBeat(h), true);
+  assert.equal(pendingInterrupt(h, {}), null);
+});
+
+test('graduation: chest → gift → daily → goal card, then coached; nextMode only moves forward', () => {
+  const g = fresh();
+  g.markSeen('welcome');
+  setQuest(g, 'bread');
+  setLevel(g, 4);
+  g.s.quest.progress = 1;
+  g.claimQuest();
+  assert.ok(graduationPending(g));
+  const sim = new SimUI(g);
+  const order = [];
+  for (let i = 0; i < 6 && g.tutorialMode() === 'guided'; i++) {
+    const s = planStep(g, sim.view());
+    order.push(s.key);
+    sim.apply(s);
+    const m = nextMode(g);
+    if (m !== g.tutorialMode()) g.setTutorialMode(m);
+  }
+  assert.deepEqual(order, ['grad:chest', 'grad:gift', 'grad:daily', 'grad:end']);
+  assert.equal(g.tutorialMode(), 'coached');
+  assert.ok(g.s.objects.some((o) => o.type === 'scarecrow' && o.free), 'scarecrow placed free');
+  assert.equal(g.s.gifts.length, 0);
+  // coached → independent at level 10 or after the list; never back
+  setLevel(g, 10);
+  assert.equal(nextMode(g), 'independent');
+  const c = coachedAt('corn', 4);
+  c.s.quest.index = CFG.QUESTS.length;
+  assert.equal(nextMode(c), 'independent');
+  const ind = fresh();
+  ind.s.tutorial.mode = 'independent';
+  assert.equal(nextMode(ind), 'independent');
+});
+
+test('shouldAutoShowDaily: new farms wait for graduation or the first claim (≤ 2 h); legacy saves as before', () => {
+  const H = 3600000;
+  const g = fresh();
+  assert.equal(shouldAutoShowDaily(g.s, g.now()), false, 'guided, just started');
+  assert.equal(shouldAutoShowDaily(g, g.now()), false);
+  assert.equal(shouldAutoShowDaily(g.s, g.now() + 2 * H + 1000), true, 'guided save older than 2 h');
+  g.skipTutorial();
+  assert.equal(shouldAutoShowDaily(g.s, g.now()), false, 'coached at the first goal');
+  g.s.quest.index = 1;
+  assert.equal(shouldAutoShowDaily(g.s, g.now()), true, 'coached after the first claim');
+  g.claimDaily();
+  assert.equal(shouldAutoShowDaily(g.s, g.now()), false, 'already claimed today');
+  assert.equal(shouldAutoShowDaily(g, g.now()), false);
+  const legacy = fresh();
+  legacy.s.tutorial = legacy.blankState().tutorial;
+  assert.equal(legacy.s.tutorial.mode, 'independent');
+  assert.equal(shouldAutoShowDaily(legacy.s, legacy.now()), true);
+  // the pure form agrees with the game's own dailyStatus
+  for (const dt of [0, 5 * H, 17 * H, 30 * H]) {
+    const s = { ...legacy.s, daily: { lastDay: null, streak: 1, lastAt: legacy.now() - dt } };
+    legacy.s.daily = s.daily;
+    assert.equal(shouldAutoShowDaily(s, legacy.now()), legacy.dailyStatus().canClaim, `dt ${dt / H}h`);
+  }
+});
+
+test('small helpers: lots, level-up "Let\'s go", tips, seed popover order', () => {
+  const g = fresh();
+  assert.deepEqual(placementSpot(g, 'coop'), { x: S + 5, z: S + 10, rot: 0, lot: true });
+  const sp = placementSpot(g, 'cowbarn');
+  assert.ok(sp && g.canPlace('cowbarn', sp.x, sp.z, 0));
+  const c = coachedAt('pasture', 4);
+  assert.equal(levelUpGo(c, 5), true);
+  assert.equal(levelUpGo(c, 6), false);
+  setLevel(c, 6);
+  assert.equal(pendingTip(c).level, 5);
+  c.markSeen('tip:5');
+  assert.equal(pendingTip(c).level, 6);
+  c.s.settings.hints = 'off';
+  assert.equal(pendingTip(c), null);
+  const k = coachedAt('carrots', 2);
+  const list = seedList(k, { last: 'wheat' });
+  assert.deepEqual(list[0], { type: 'carrot', tag: 'goal' });
+  assert.deepEqual(list.map((x) => x.type).sort(), ['carrot', 'wheat']);
+});
+
+// ---------------------------------------------------------------- the guide-follower
+const SEEDS = [1, 2, 3, 4, 5];
+const runs = [];
+
+// One full run per seed (4 s per tap); seed 1 also saves and reloads at every new goal.
+function follow(seed, { reloadCheck = false } = {}) {
+  t = T0; // same start time whatever ran before (day boundaries change chores and the daily gift)
+  return seeded(seed, () => {
+    const g = fresh();
+    const sim = new SimUI(g);
+    const mismatches = [];
+    const guidedMeanwhile = [];
+    const onQuest = reloadCheck ? () => {
+      const view = sim.view();
+      const before = planStep(g, view, { cache: false }).key;
+      const st = new MemStorage();
+      g.storage = st;
+      g.save();
+      g.storage = null;
+      const g2 = fresh(st);
+      const after = planStep(g2, view, { cache: false }).key;
+      if (before !== after) mismatches.push(`${g.currentQuest().id || g.currentQuest().text}: ${before} ≠ ${after}`);
+    } : null;
+    const onStep = (s) => { if (g.tutorialMode() === 'guided' && s.meanwhile) guidedMeanwhile.push(s.meanwhile); assertKeys(s, `(seed ${seed})`); };
+    const f = new GuideFollower(g, { sim, advance, onQuest, onStep });
+    const r = f.run({ maxSec: 150 * 60, until: (gg) => gg.s.quest.index >= CFG.QUESTS.length });
+    return { seed, r, mismatches, guidedMeanwhile, done: g.s.quest.index >= CFG.QUESTS.length };
+  });
+}
+
+test('guide-follower: Chapter 1 within 10 sim-minutes; the whole list (median of 5 seeds) within 90; no dead ends', () => {
+  for (const seed of SEEDS) runs.push(follow(seed, { reloadCheck: seed === 1 }));
+  for (const { seed, r, done } of runs) {
+    assert.ok(done, `seed ${seed}: finished the scripted list`);
+    assert.ok(r.chapters[1] <= 10, `seed ${seed}: Chapter 1 at ${r.chapters[1]} min`);
+    assert.ok(r.chapters[3] <= 130, `seed ${seed}: whole list at ${r.chapters[3]} min`);
+    assert.deepEqual(r.deadEnds, [], `seed ${seed}: dead ends`);
+    assert.equal(r.nones.length, 0, `seed ${seed}: no 'none' step while stuck`);
+    assert.equal(r.stalls, 0, `seed ${seed}: no taps that change nothing`);
+    assert.equal(r.safetyNet, 0, `seed ${seed}: the safety net never fires for a guided player`);
+  }
+  const median = runs.map((x) => x.r.chapters[3]).sort((a, b) => a - b)[Math.floor(runs.length / 2)];
+  assert.ok(median <= 90, `median whole-list time ${median} min`);
+});
+
+test('guide-follower: save and reload at every goal leaves planStep(...).key unchanged', () => {
+  const one = runs.find((x) => x.seed === 1) || follow(1, { reloadCheck: true });
+  assert.ok(one.r.quests.length >= CFG.QUESTS.length);
+  assert.deepEqual(one.mismatches, []);
+});
+
+test('guide-follower: guided Meanwhile never plows; every key it was shown is a real data-guide key', () => {
+  for (const { seed, r, guidedMeanwhile } of runs) {
+    assert.ok(guidedMeanwhile.length > 0, `seed ${seed}: some guided waits`);
+    for (const m of guidedMeanwhile) assert.ok(m.action !== 'plow' && !keysOf(m).includes('tool:plow'), `seed ${seed}: ${m.key}`);
+    for (const k of r.keys) assert.ok(isGuideKey(k), `seed ${seed}: ${k}`);
+  }
+});
+
+// ---------------------------------------------------------------- wander fuzz (§7.1 #7)
+// Things a curious player does off-script, between guided taps and reloads every 1–4 sim-minutes:
+// the guide must keep finding a way through Chapter 1. A few seeds squander everything on purpose.
+const PANELS = ['shop', 'barn', 'orders', 'today', 'farmhouse'];
+const DECOR = ['bush', 'fence', 'path', 'flowers', 'oak'];
+const WANDER_SEEDS = Array.from({ length: 30 }, (_, i) => 101 + i);
+const BROKE_SEEDS = new Set([110, 120, 130]);
+const pick = (list) => list[Math.floor(Math.random() * list.length)];
+function disrupt(g, sim) {
+  const spot = (type) => g.smartSpot(type);
+  const soil = Object.keys(g.s.soil);
+  const acts = [
+    () => g.sell('wheat', g.count('wheat')),
+    // the Clear tool on a field tile
+    () => { if (soil.length) { const [x, z] = pick(soil).split(',').map(Number); g.clearSoil(x, z); } },
+    () => { const sp = g.s.level >= 3 && !g.objectCount('bakery') && g.s.coins >= g.objectCost('bakery') && spot('bakery'); if (sp) g.placeObject('bakery', sp.x, sp.z, 0); },
+    () => { const type = pick(DECOR); const sp = g.s.coins >= g.objectCost(type) && spot(type); if (sp) g.placeObject(type, sp.x, sp.z, 0); },
+    () => { const o = g.s.orders.filter((x) => !x.waitUntil); if (o.length) g.discardOrder(pick(o).id); },
+    () => sim.openPanel(pick(PANELS)),
+    () => sim.closePanel(),
+    // start a decor placement and leave it to the guide, or cancel the one that's up
+    () => { if (sim.ui.placing) sim.tap('place:cancel'); else sim.startPlacement(pick(DECOR)); },
+    () => sim.setTool(pick(['hand', 'plow', 'seed', 'remove'])),
+  ];
+  pick(acts)();
+}
+
+// as if everything was sold and the coins spent on decor: no coins, goods or crops left
+function squander(g) {
+  g.s.coins = 0;
+  for (const i of Object.keys(g.s.inventory)) if (CFG.ITEMS[i].cat !== 'material') delete g.s.inventory[i];
+  for (const soil of Object.values(g.s.soil)) soil.crop = null;
+}
+
+function wander(seed, { broke = false, limit = 15 } = {}) {
+  t = T0;
+  return seeded(seed, () => {
+    const t0 = t;
+    let g = fresh();
+    if (broke) squander(g);
+    const out = { deadEnds: [], nones: 0, net: 0, reloads: 0 };
+    while (!g.chapterDone(1) && t - t0 < limit * 60000) {
+      const sim = new SimUI(g);
+      const f = new GuideFollower(g, { sim, advance, onStep: (s) => { assertKeys(s, `(wander ${seed})`); if (Math.random() < 0.1) disrupt(g, sim); } });
+      const r = f.run({ maxSec: Math.min(60 + Math.random() * 180, limit * 60 - (t - t0) / 1000), until: (gg) => gg.chapterDone(1) });
+      out.deadEnds.push(...r.deadEnds);
+      out.nones += r.nones.length;
+      out.net += r.safetyNet;
+      // reload from a save, as after closing the app
+      const st = new MemStorage();
+      g.storage = st;
+      g.save();
+      g = fresh(st);
+      g.storage = null;
+      out.reloads++;
+    }
+    out.minutes = (t - t0) / 60000;
+    out.done = g.chapterDone(1);
+    return out;
+  });
+}
+
+const wanders = [];
+test('wander fuzz (30 seeds): detours and reloads still finish Chapter 1 within 15 sim-minutes; no dead ends; the safety net only for squandered farms', () => {
+  for (const seed of WANDER_SEEDS) {
+    const broke = BROKE_SEEDS.has(seed);
+    const w = wander(seed, { broke });
+    wanders.push({ seed, broke, ...w });
+    assert.ok(w.done, `seed ${seed}: Chapter 1 not done after ${w.minutes.toFixed(1)} min`);
+    assert.deepEqual(w.deadEnds, [], `seed ${seed}: dead ends`);
+    assert.equal(w.nones, 0, `seed ${seed}: 'none' steps while stuck`);
+    assert.equal(w.net, broke ? 1 : 0, `seed ${seed}: safety net`);
+    assert.ok(w.reloads >= 1);
+  }
+});
+
+test('a farm that is truly broke gets Mabel\'s pocket money, and the guide carries on from there', () => {
+  seeded(7, () => {
+    const g = coachedAt('plant', 1);
+    g.s.coins = 0;
+    g.s.inventory = {};
+    for (const soil of Object.values(g.s.soil)) soil.crop = null;
+    g.s.objects = g.s.objects.filter((o) => CFG.OBJECTS[o.type].kind !== 'debris');
+    g.rebuildOccupancy();
+    const f = new GuideFollower(g, { advance });
+    const r = f.run({ maxSec: 10 * 60, until: (gg) => gg.s.quest.index > qIndex('plant') });
+    assert.equal(r.safetyNet, 1, 'paid once');
+    assert.ok(g.s.quest.index > qIndex('plant'), 'then the plant goal was done');
+  });
+});
+
+// ---------------------------------------------------------------- run
+let pass = 0, fail = 0;
+for (const { name, fn } of tests) {
+  try { await fn(); pass++; console.log('  ✓', name); } catch (e) { fail++; console.log('  ✗', name, '\n     ', e.message.split('\n')[0], (e.stack || '').split('\n').find((l) => l.includes('test-guide.mjs:')) || ''); }
+}
+if (wanders.length) {
+  const mins = wanders.map((w) => w.minutes).sort((a, b) => a - b);
+  console.log(`\n  wander fuzz: Chapter 1 in ${mins[0].toFixed(1)}–${mins[mins.length - 1].toFixed(1)} min (median ${mins[mins.length >> 1].toFixed(1)}), ${wanders.reduce((n, w) => n + w.reloads, 0)} reloads, squandered seeds ${wanders.filter((w) => w.broke).map((w) => `${w.seed} ${w.minutes.toFixed(1)}m`).join(', ')}`);
+}
+if (runs.length) {
+  console.log('\n  guide-follower (4 s per tap), minutes:');
+  for (const { seed, r } of runs) {
+    const L = Object.entries(r.levels).map(([l, m]) => `L${l} ${m}`).join(' · ');
+    console.log(`    seed ${seed}: Ch1 ${r.chapters[1]} · Ch2 ${r.chapters[2]} · Ch3 ${r.chapters[3]} | ${L} | gap ${r.longestGap}s · idle ${Math.round((r.idleSec / 60 / r.minutes) * 100)}% · silo 90% at ${r.firstSiloFull ?? '–'}`);
+  }
+}
+console.log(`\n${pass} passed, ${fail} failed`);
+process.exit(fail ? 1 : 0);

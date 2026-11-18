@@ -1,13 +1,16 @@
 // Headless economy / pacing simulator.
 // Drives the real Game rules (src/game/state.js) with a fake clock and a greedy bot,
 // and reports how long it takes to reach each level and each unlock.
+// The beginner profile instead follows the in-game guide (planStep → SimUI, tools/simui.mjs).
 //
-//   npm run sim                  -> active + casual player reports
+//   npm run sim                  -> active + casual + guided beginner reports
 //   node tools/sim.mjs --hours 48 --profile active
+//   node tools/sim.mjs --profile beginner --seeds 9
 import { Game } from '../src/game/state.js';
 import * as CFG from '../src/game/config.js';
+import { GuideFollower } from './simui.mjs';
 
-const { CROPS, ANIMALS, RECIPES, OBJECTS, ITEMS, STORAGE, ACHIEVEMENTS, VISITORS, PROJECTS } = CFG;
+const { CROPS, ANIMALS, RECIPES, OBJECTS, ITEMS, STORAGE, ACHIEVEMENTS, VISITORS, PROJECTS, QUESTS } = CFG;
 const args = Object.fromEntries(process.argv.slice(2).map((a, i, arr) => a.startsWith('--') ? [a.slice(2), arr[i + 1] && !arr[i + 1].startsWith('--') ? arr[i + 1] : true] : null).filter(Boolean));
 
 // -------------------------------------------------------------------- bot
@@ -232,12 +235,18 @@ export class Bot {
 }
 
 // -------------------------------------------------------------------- runner
-export function run({ profile = 'active', hours = 24, seed = 1 } = {}) {
-  let t = Date.UTC(2026, 0, 1, 8, 0, 0);
-  const start = t;
-  // deterministic Math.random for reproducibility
+const START = Date.UTC(2026, 0, 1, 8, 0, 0);
+
+// deterministic Math.random for reproducibility (the same generator the guide tests use)
+function seedRandom(seed) {
   let s = seed >>> 0;
   Math.random = () => { s = (s + 0x6d2b79f5) | 0; let x = Math.imul(s ^ (s >>> 15), 1 | s); x = (x + Math.imul(x ^ (x >>> 7), 61 | x)) ^ x; return ((x ^ (x >>> 14)) >>> 0) / 4294967296; };
+}
+
+export function run({ profile = 'active', hours = 24, seed = 1 } = {}) {
+  let t = START;
+  const start = t;
+  seedRandom(seed);
   const g = new Game({ clock: () => t, storage: null });
   const bot = new Bot(g);
   const levelAt = { 1: 0 };
@@ -272,6 +281,62 @@ export function run({ profile = 'active', hours = 24, seed = 1 } = {}) {
   for (const [id, r] of Object.entries(RECIPES)) unlockAt['recipe:' + id] = levelAt[Math.max(r.level || 1, OBJECTS[r.building].level)];
   for (const [id, p] of Object.entries(PROJECTS)) unlockAt['project:' + id] = levelAt[p.level];
   return { g, levelAt, unlockAt, activeMin: activeMs / 60000 };
+}
+
+// Guided beginner (§7.2): a new farm that does exactly what the guide points at, through SimUI's fake
+// HUD, at 4 s per tap, 3 s per new Mabel line (double for first-time UI) and 6 s per level-up modal.
+// It plays the scripted goals, then keeps following the endless goals until L10 for the level timeline.
+// Times are in minutes; longestGap (s) is between reward events in the first 30 min.
+export function runBeginner({ seed = 1, maxMin = 180 } = {}) {
+  let t = START;
+  seedRandom(seed);
+  const g = new Game({ clock: () => t, storage: null });
+  const f = new GuideFollower(g, { advance: (sec) => { t += sec * 1000; } });
+  const r = f.run({ maxSec: maxMin * 60, until: (gg) => gg.s.quest.index >= QUESTS.length });
+  const listDone = g.s.quest.index >= QUESTS.length;
+  const levelAt = { 1: 0, ...r.levels };
+  const deadEnds = [...r.deadEnds];
+  let safetyNet = r.safetyNet;
+  if (listDone && g.s.level < 10) {
+    const off = r.minutes;
+    const more = f.run({ maxSec: (maxMin - off) * 60, until: (gg) => gg.s.level >= 10 });
+    for (const [l, m] of Object.entries(more.levels)) levelAt[l] ??= +(off + m).toFixed(2);
+    for (const d of more.deadEnds) deadEnds.push({ ...d, at: +(off + d.at).toFixed(2) });
+    safetyNet += more.safetyNet;
+  }
+  return {
+    seed, g, levelAt, deadEnds, safetyNet, listDone,
+    chapters: r.chapters, quests: r.quests, longestGap: r.longestGap, gapAt: r.gapAt,
+    idleShare: r.minutes ? r.idleSec / 60 / r.minutes : 0, firstSiloFull: r.firstSiloFull, taps: r.taps, listMin: r.minutes,
+  };
+}
+
+const median = (xs) => {
+  const v = xs.filter((x) => x != null).sort((a, b) => a - b);
+  if (!v.length) return null;
+  const m = v.length >> 1;
+  return v.length % 2 ? v[m] : (v[m - 1] + v[m]) / 2;
+};
+const fmtMin = (m) => (m == null || !Number.isFinite(m) ? '—' : `${m.toFixed(1)}m`);
+
+function reportBeginner(seeds) {
+  console.log(`\n=== GUIDED BEGINNER, following the guide at 4 s/tap, seeds 1–${seeds} ===`);
+  const runs = [];
+  for (let seed = 1; seed <= seeds; seed++) {
+    const b = runBeginner({ seed });
+    runs.push(b);
+    const ch = [1, 2, 3].map((c) => `Ch${c} ${fmtMin(b.chapters[c])}`).join(' · ');
+    const lv = Array.from({ length: 9 }, (_, i) => `L${i + 2} ${fmtMin(b.levelAt[i + 2])}`).join(' ');
+    console.log(`seed ${seed}: ${ch} | ${lv}`);
+    console.log(`        reward gap ${b.longestGap}s (at ${fmtMin(b.gapAt)}) · idle ${Math.round(b.idleShare * 100)}% · silo 90% at ${fmtMin(b.firstSiloFull)} · ${b.taps} taps · dead ends ${b.deadEnds.length} · safety net ${b.safetyNet}`);
+    if (args.dump) console.log('        goals:', b.quests.map((q) => `${q.id}@${q.at}`).join(' '));
+  }
+  const med = (fn) => median(runs.map(fn));
+  const ch = [1, 2, 3].map((c) => `Ch${c} ${fmtMin(med((b) => b.chapters[c]))}`).join(' · ');
+  const lv = Array.from({ length: 9 }, (_, i) => `L${i + 2} ${fmtMin(med((b) => b.levelAt[i + 2]))}`).join(' ');
+  console.log(`median: ${ch} | ${lv}`);
+  console.log(`        reward gap ${med((b) => b.longestGap)}s (worst ${Math.max(...runs.map((b) => b.longestGap))}s) · idle ${Math.round(med((b) => b.idleShare) * 100)}% · silo 90% at ${fmtMin(med((b) => b.firstSiloFull))}`);
+  return runs;
 }
 
 export function dump(g) {
@@ -309,20 +374,40 @@ if (isMain && (!args.profile || args.profile === 'active')) results.active = rep
 if (isMain && (!args.profile || args.profile === 'casual')) results.casual = report('casual', +(args.casualHours || 24 * 14));
 if (isMain && (args.profile === 'engaged' || args.check)) results.engaged = report('engaged', +(args.engagedHours || 24 * 24));
 if (isMain && args.profile === 'light') results.light = report('light', +(args.lightHours || 24 * 40));
+// the beginner's visitors and orders are random, so it runs several seeds and the checks use every seed
+// (or the median, for the one goal that waits on random visitors)
+if (isMain && (!args.profile || args.profile === 'beginner' || args.check)) results.beginner = reportBeginner(Math.max(1, +(args.seeds || 5)));
 
 // --check: pacing guardrails from the design panel (fail CI if a balance change breaks pacing)
 if (isMain && args.check) {
   const A = results.active?.levelAt || {}, E = results.engaged?.levelAt || {};
+  const B = results.beginner || [];
+  const at = (x) => (x == null ? Infinity : x);
+  const worst = (fn) => Math.max(...B.map((b) => at(fn(b))));
+  const best = (fn) => Math.min(...B.map((b) => at(fn(b))));
+  const span = (fn) => `${fmtMin(best(fn))}–${fmtMin(worst(fn))}`;
+  const listMedian = median(B.map((b) => (b.listDone ? b.chapters[3] : Infinity)));
+  const deadEnds = B.reduce((n, b) => n + b.deadEnds.length, 0);
   const checks = [
-    ['active: L6 within 15 min', A[6] != null && A[6] <= 15],
-    ['active: L10 between 45 and 100 min', A[10] != null && A[10] >= 45 && A[10] <= 100],
-    ['active: L15 between 2.5h and 5h', A[15] != null && A[15] >= 150 && A[15] <= 300],
-    ['active: nobody unlocks everything in 8h of non-stop play', !(A[30] != null && A[30] < 8 * 60)],
-    ['engaged: L30 between day 13 and day 24', E[30] != null && E[30] >= 13 * 1440 && E[30] <= 24 * 1440],
+    ['active: L6 within 15 min', A[6] != null && A[6] <= 15, fmt(A[6])],
+    ['active: L10 between 45 and 100 min', A[10] != null && A[10] >= 45 && A[10] <= 100, fmt(A[10])],
+    ['active: L15 between 2.5h and 5h', A[15] != null && A[15] >= 150 && A[15] <= 300, fmt(A[15])],
+    ['active: nobody unlocks everything in 8h of non-stop play', !(A[30] != null && A[30] < 8 * 60), fmt(A[30])],
+    ['active: L5 no sooner than 6.5 min (anti-rush)', A[5] != null && A[5] >= 6.5, fmt(A[5])],
+    ['active: L7 no sooner than 18 min (anti-rush)', A[7] != null && A[7] >= 18, fmt(A[7])],
+    ['active: L10 no sooner than 52 min (anti-rush)', A[10] != null && A[10] >= 52, fmt(A[10])],
+    ['engaged: L30 between day 13 and day 24', E[30] != null && E[30] >= 13 * 1440 && E[30] <= 24 * 1440, fmt(E[30])],
     ['every level 2..30 unlocks something', Array.from({ length: 29 }, (_, i) => i + 2).every((l) => CFG.unlocksAtLevel(l).length)],
+    ['beginner: Chapter 1 complete within 10 min (every seed)', B.length && worst((b) => b.chapters[1]) <= 10, span((b) => b.chapters[1])],
+    ['beginner: L4 within 8 min (every seed)', B.length && worst((b) => b.levelAt[4]) <= 8, span((b) => b.levelAt[4])],
+    ['beginner: L6 between 13 and 25 min (every seed)', B.length && best((b) => b.levelAt[6]) >= 13 && worst((b) => b.levelAt[6]) <= 25, span((b) => b.levelAt[6])],
+    ['beginner: L7 within 35 min (every seed)', B.length && worst((b) => b.levelAt[7]) <= 35, span((b) => b.levelAt[7])],
+    ['beginner: longest reward gap in the first 30 min ≤ 180 s (every seed)', B.length && worst((b) => b.longestGap) <= 180, `${worst((b) => b.longestGap)}s`],
+    ['beginner: no planner dead-ends over 30 s (every seed)', B.length && deadEnds === 0, `${deadEnds}`],
+    ['beginner: all scripted goals within 90 min (median seed)', B.length && listMedian <= 90, `${fmtMin(listMedian)}, seeds ${span((b) => (b.listDone ? b.chapters[3] : null))}`],
   ];
   console.log('\n=== PACING CHECKS ===');
   let bad = 0;
-  for (const [name, ok] of checks) { console.log(ok ? '  ✓' : '  ✗', name); if (!ok) bad++; }
+  for (const [name, ok, value] of checks) { console.log(ok ? '  ✓' : '  ✗', name + (value != null ? `  [${value}]` : '')); if (!ok) bad++; }
   process.exit(bad ? 1 : 0);
 }

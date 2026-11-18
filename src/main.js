@@ -1,7 +1,9 @@
 import * as THREE from 'three';
 import './style.css';
-import { ITEMS, CROPS, ANIMALS, OBJECTS, STORAGE, PROJECTS } from './game/config.js';
+import { ITEMS, CROPS, ANIMALS, OBJECTS, STORAGE, PROJECTS, TUTORIAL } from './game/config.js';
 import { Game } from './game/state.js';
+import { seedList, plantCap, placementSpot } from './game/guide.js';
+import { farmCore } from './game/layout.js';
 import { World, tileToWorld, worldToTile } from './game/world.js';
 import { FarmView, ObjectView, AnimalView, DogView, VisitorView, WagonView, ProjectView, PROJECT_SITES, Ghost, TileCursor, objectCenter } from './game/views.js';
 import { Effects } from './game/effects.js';
@@ -9,6 +11,7 @@ import { Audio } from './game/audio.js';
 import { Input } from './game/input.js';
 import { HUD, fmtTime } from './ui/hud.js';
 import { Bubbles } from './ui/bubbles.js';
+import { GuideController } from './ui/guide-ui.js';
 import './game/models/index.js';
 
 const DAY_MS = 10 * 60 * 1000; // one in-game day = 10 real minutes
@@ -55,6 +58,8 @@ class Controller {
       onKey: (e) => this.onKey(e),
       onAnyDown: () => this.audio.unlock(),
     });
+    // Grandma Mabel: tutorial, Show me, hints (presentation only; it also sets the HUD reveal)
+    this.guide = new GuideController(this);
 
     this.game.on('land', () => {
       this.world.drawGround(this.game.landLo(), this.game.landHi());
@@ -75,18 +80,24 @@ class Controller {
     });
     this.game.on('mastery', () => { if (this.tool === 'seed') this.hud.renderSeedBar(); });
 
-    // frame the farmhouse & fields at start
-    const house = this.game.s.objects.find((o) => o.type === 'farmhouse');
-    if (house) {
-      const c = objectCenter(this.game, house);
+    // a brand-new farm opens high over the farm and the guide glides down to the field;
+    // otherwise frame the farmhouse & fields
+    const g = this.game;
+    const house = g.s.objects.find((o) => o.type === 'farmhouse');
+    if (g.tutorialMode() === 'guided' && !g.hasSeen('welcome')) {
+      const [cx, cz] = farmCore(g);
+      this.world.rig.target.copy(tileToWorld(cx, cz));
+      this.world.rig.setDist(24);
+    } else if (house) {
+      const c = objectCenter(g, house);
       this.world.rig.target.set(c.x + 4, 0, c.z + 4);
     }
 
     this.bubbleTimer = 0;
     this.lastT = performance.now();
-    // daily gift greets returning players
-    setTimeout(() => this.hud.showDaily(true), 1200);
     document.getElementById('loading').classList.add('gone');
+    // the guide decides about the welcome, the tour and the daily gift popup
+    this.guide.start();
     document.addEventListener('visibilitychange', () => { if (document.hidden) this.game.save(); });
     window.addEventListener('pagehide', () => this.game.save());
     this.loop();
@@ -117,7 +128,12 @@ class Controller {
     const t = this.tileAt(e);
     if (!t) return;
     if (this.placing) { this.movePlacement(t); return; }
-    if (first) this.paint = { last: null, warned: false, mode: this.tool === 'hand' ? 'harvest' : this.tool, count: 0 };
+    if (first) {
+      this.paint = { last: null, warned: false, mode: this.tool === 'hand' ? 'harvest' : this.tool, count: 0, origin: null };
+      // tap-to-harvest: remember the tapped ripe crop, so a tap (not a swipe) can take its whole patch
+      const soil = this.paint.mode === 'harvest' && this.game.soilAt(t.x, t.z);
+      if (soil && soil.crop && this.game.cropStage(soil.crop) === 3) this.paint.origin = { x: t.x, z: t.z, crop: soil.crop.type };
+    }
     if (!this.paint) return;
     const last = this.paint.last;
     // walk every tile between the last sample and this one so fast swipes don't skip tiles
@@ -134,8 +150,23 @@ class Controller {
 
   onPaintEnd(cancelled, e, moved) {
     if (this.placing && e && e.pointerType === 'mouse' && !moved && !cancelled) this.confirmPlacement();
+    const p = this.paint;
     this.paint = null;
+    if (p && p.origin && p.mode === 'harvest' && !cancelled && !moved && this.game.s.settings.tapHarvest !== false) this.harvestPatch(p.origin);
     if (!e || e.pointerType !== 'mouse') this.cursor.hide();
+  }
+
+  // A tap on a ripe crop harvests its 4-connected patch of the same crop (the tapped tile went on press).
+  // Same rules as a swipe, tile by tile; only the effects are staggered. Stops when the store is full.
+  harvestPatch({ x, z, crop }) {
+    const g = this.game;
+    const ripe = (s) => !!s.crop && s.crop.type === crop && g.cropStage(s.crop) === 3;
+    const tiles = g.patchTiles(x, z, ripe, TUTORIAL.patchMax).filter(([a, b]) => a !== x || b !== z);
+    let i = 0;
+    for (const [tx, tz] of tiles) {
+      if (g.spaceFor(crop) < CROPS[crop].yield) { this.guide.storageFull(g.storageOf(crop)); break; }
+      this.harvestAt(tx, tz, { fxDelay: ++i * 60 });
+    }
   }
 
   toolColor(t) {
@@ -145,7 +176,10 @@ class Controller {
     switch (this.tool) {
       case 'plow': return !soil && !g.objectAt(t.x, t.z) ? '#ffffff' : '#ff6b6b';
       case 'seed': return soil && !soil.crop ? '#9cff6b' : '#ff6b6b';
-      case 'remove': return soil || (g.objectAt(t.x, t.z) && OBJECTS[g.objectAt(t.x, t.z).type].kind === 'decor') ? '#ffb86b' : '#ff6b6b';
+      case 'remove': {
+        const kind = g.objectAt(t.x, t.z) && OBJECTS[g.objectAt(t.x, t.z).type].kind;
+        return soil || kind === 'decor' || kind === 'debris' ? '#ffb86b' : '#ff6b6b';
+      }
       default: return '#ffffff';
     }
   }
@@ -159,12 +193,21 @@ class Controller {
           if (!this.paint.warned) { this.paint.warned = true; this.hud.toast('Expand your land to farm here 🗺️', 'info'); }
           return;
         }
-        const cost = g.plowCost();
-        if (g.plow(x, z)) {
+        // guided "Plow 2 new fields": one tap on a marked plot plows every marked plot (each at its normal price)
+        const assist = isTap && this.guide.plowAssist(x, z);
+        let plowed = 0;
+        for (const [px, pz] of assist || [[x, z]]) {
+          const cost = g.plowCost();
+          if (!g.plow(px, pz)) continue;
+          plowed++;
+          const at = tileToWorld(px, pz);
+          this.effects.burst(at, ['#8a5a33', '#6d4325', '#a87447'], 8, 0.7);
+          if (cost) this.effects.floatText(at, `-🪙${cost}`, 'cost');
+        }
+        if (plowed) {
           this.audio.play('plow');
-          this.effects.burst(pos, ['#8a5a33', '#6d4325', '#a87447'], 8, 0.7);
-          if (cost) this.effects.floatText(pos, `-🪙${cost}`, 'cost');
           this.hud.refreshToolHint();
+          if (assist) setTimeout(() => { if (this.tool === 'plow') this.setTool('hand'); }, 600);
         } else if (isTap) {
           const soil = g.soilAt(x, z);
           if (soil) this.hud.toast('Already plowed — pick 🌱 Seeds to plant', 'info');
@@ -194,6 +237,7 @@ class Controller {
           return;
         }
         const o = g.objectAt(x, z);
+        if (o && OBJECTS[o.type].kind === 'debris') { this.clearDebris(o); return; } // tap or drag
         if (o && isTap) {
           const kind = OBJECTS[o.type].kind;
           if (kind === 'decor') this.removeObject(o);
@@ -217,18 +261,23 @@ class Controller {
     return !!(o && OBJECTS[o.type].kind === 'tree' && g.treeState(o) === 'ready');
   }
 
-  harvestAt(x, z) {
+  // fxDelay: the rules apply now, the effects a little later (patch harvests ripple across the field)
+  harvestAt(x, z, { fxDelay = 0 } = {}) {
     const o = this.game.objectAt(x, z);
-    if (o && OBJECTS[o.type].kind === 'tree') { this.harvestTree(o); return; }
+    if (o && OBJECTS[o.type].kind === 'tree') { this.harvestTree(o); return null; }
     const r = this.game.harvest(x, z);
-    if (!r) return;
+    if (!r) return null;
     const pos = tileToWorld(x, z);
-    this.audio.play('harvest');
-    this.effects.burst(pos, burstColors(r.item), 10);
-    this.effects.floatText(pos.clone().setY(0.6), `+${r.qty} ${ITEMS[r.item].icon}`);
-    this.effects.fly(pos, ITEMS[r.item].icon, this.hud.barnBtn);
-    this.effects.fly(pos, '⭐', this.hud.levelBox, { delay: 120 });
+    const fx = () => {
+      this.audio.play('harvest');
+      this.effects.burst(pos, burstColors(r.item), 10);
+      this.effects.floatText(pos.clone().setY(0.6), `+${r.qty} ${ITEMS[r.item].icon}`);
+      this.effects.fly(pos, ITEMS[r.item].icon, this.hud.barnBtn);
+      this.effects.fly(pos, '⭐', this.hud.levelBox, { delay: 120 });
+    };
+    if (fxDelay) setTimeout(fx, fxDelay); else fx();
     if (Math.random() < 0.15) this.dog.goTo(pos);
+    return r;
   }
 
   harvestTree(o) {
@@ -252,6 +301,7 @@ class Controller {
   }
 
   onKey(e) {
+    if (this.guide.onKey(e)) return; // Mabel's own welcome / skip question
     const k = e.key.toLowerCase();
     const modal = this.hud.topModal();
     if (modal) { if (k === 'escape' || k === 'enter') this.hud.closeTopModal(); return; }
@@ -262,10 +312,11 @@ class Controller {
     if (k === 'r' && this.placing) this.rotatePlacement();
     if (k === 'enter' && this.placing) this.confirmPlacement();
     const tools = { 1: 'hand', 2: 'plow', 3: 'seed', 4: 'remove' };
-    if (tools[k]) this.setTool(tools[k]);
-    if (k === 'b') this.hud.openBarn();
-    if (k === 'o') this.hud.openOrders();
-    if (k === 'p') this.hud.openShop();
+    if (tools[k] && this.hud.revealed('tools')) this.setTool(tools[k]);
+    // shortcuts only for buttons the tour has shown already
+    if (k === 'b' && this.hud.revealed('barn')) this.hud.openBarn();
+    if (k === 'o' && this.hud.revealed('orders')) this.hud.openOrders();
+    if (k === 'p' && this.hud.revealed('shop')) this.hud.openShop();
   }
 
   // ------------------------------------------------------------------ taps (hand tool)
@@ -303,14 +354,50 @@ class Controller {
         const left = (g.cropReadyAt(soil.crop) - g.now()) / 1000;
         this.effects.floatText(pos.clone().setY(0.5), `${ITEMS[soil.crop.type].icon} ${fmtTime(left)}`, 'info');
         this.hud.openCropInfo(t.x, t.z);
-      } else {
-        this.setTool('seed');
-        this.hud.toast('Pick a seed and tap soil to plant 🌱', 'info');
-      }
+      } else this.tapEmptySoil(t.x, t.z);
       return;
     }
     this.dog.goTo(pos);
     if (Math.random() < 0.3) this.audio.play('woof');
+  }
+
+  // Tap empty soil: with one crop unlocked it plants right away, else the seed popover asks which.
+  tapEmptySoil(x, z) {
+    const g = this.game;
+    const crops = Object.keys(CROPS).filter((c) => g.isUnlocked('crops', c));
+    if (crops.length === 1) { this.plantPatchAt(x, z, crops[0]); return; }
+    const p = this.world.project(tileToWorld(x, z).setY(0.3));
+    this.audio.play('click');
+    this.hud.openSeedPopover({ x, z, screen: { x: p.x, y: p.y }, crops: seedList(g, { last: this.seed }), onPick: (type) => this.plantPatchAt(x, z, type) });
+  }
+
+  // Plant the empty patch around (x, z): at most `cap` tiles (the tour's cap, else 24) and what coins allow.
+  plantPatchAt(x, z, crop, cap = plantCap(this.game, crop)) {
+    const tiles = this.game.plantPatch(x, z, crop, cap);
+    if (!tiles.length) return tiles;
+    this.seed = crop;
+    this.audio.play('plant');
+    const cost = CROPS[crop].seedCost;
+    tiles.forEach(([tx, tz], i) => setTimeout(() => {
+      const pos = tileToWorld(tx, tz);
+      this.effects.burst(pos, ['#8fd45f', '#5fae3e'], 5, 0.5);
+      this.effects.floatText(pos, `-🪙${cost}`, 'cost');
+    }, i * 40));
+    this.guide.planted(tiles, crop);
+    return tiles;
+  }
+
+  // weeds, stones and stumps: a puff and a tiny reward
+  clearDebris(o) {
+    const pos = objectCenter(this.game, o);
+    const r = this.game.clearDebris(o.id);
+    if (!r) return;
+    this.audio.play('plow');
+    this.effects.puff(pos, r.type);
+    const bits = [r.coins ? `+🪙${r.coins}` : '', r.xp ? `+⭐${r.xp}` : ''].filter(Boolean).join(' ');
+    if (bits) this.effects.floatText(pos.clone().setY(0.9), bits);
+    if (r.coins) this.effects.fly(pos.clone().setY(0.5), '🪙', this.hud.coinsPill, { delay: 150 });
+    if (r.xp) this.effects.fly(pos.clone().setY(0.5), '⭐', this.hud.levelBox, { delay: 260 });
   }
 
   tapProject(id) {
@@ -322,6 +409,7 @@ class Controller {
 
   tapObject(o) {
     const def = OBJECTS[o.type];
+    if (def.kind === 'debris') { this.clearDebris(o); return; }
     this.bounce(o);
     if (o.type === 'farmhouse') {
       if (this.game.s.level >= PROJECTS.master.level && (this.game.s.projects?.master?.stage || 0) < PROJECTS.master.stages.length) { this.hud.openProject('master'); return; }
@@ -536,26 +624,55 @@ class Controller {
     this.audio.play('coin');
     const r = this.hud.questCard.getBoundingClientRect();
     for (let i = 0; i < 4; i++) this.effects.flyFrom(r.left + r.width / 2, r.top + r.height / 2, '🪙', this.hud.coinsPill, { delay: i * 80 });
+    if (q.reward.xp) this.effects.flyFrom(r.left + r.width / 2, r.top + r.height / 2, '⭐', this.hud.levelBox, { delay: 220 });
     this.hud.toast(`Goal complete! +🪙${q.reward.coins || 0}${q.reward.xp ? ` +⭐${q.reward.xp}` : ''}`, 'good');
     this.hud.questCard.classList.remove('done-flash');
   }
 
   // ------------------------------------------------------------------ placement
-  startPlacement(type, moveId = null) {
+  // opts: a move id (number), or { moveId, gift, near: [x, z] }. A new building's ghost starts on its tutorial
+  // lot (first coop / bakery) or the tidiest free spot near the camera (smartSpot); gifts are free chapter decor.
+  startPlacement(type, opts = {}) {
+    if (typeof opts !== 'object' || opts === null) opts = { moveId: opts };
+    const { moveId = null, gift = false } = opts;
     if (this.placing) this.cancelPlacement();
     const g = this.game;
     const existing = moveId ? g.objById.get(moveId) : null;
-    // start in the middle of the screen
-    const c = this.world.groundPoint(window.innerWidth / 2, window.innerHeight / 2) || new THREE.Vector3();
-    const t = worldToTile(c);
-    const [w, d] = g.objSize(type, existing ? existing.rot : 0);
-    this.placing = { type, rot: existing ? existing.rot : 0, x: existing ? existing.x : t.x - Math.floor(w / 2), z: existing ? existing.z : t.z - Math.floor(d / 2), moveId };
+    const rot = existing ? existing.rot : 0;
+    let spot = existing ? { x: existing.x, z: existing.z } : null;
+    if (!existing) {
+      const ct = worldToTile(this.world.rig.target);
+      const near = opts.near || [ct.x, ct.z];
+      spot = gift ? g.smartSpot(type, 0, near) : placementSpot(g, type, near);
+    }
+    if (!spot) {
+      // nothing tidy free: start in the middle of the screen
+      const c = this.world.groundPoint(window.innerWidth / 2, window.innerHeight / 2) || new THREE.Vector3();
+      const t = worldToTile(c);
+      const [w, d] = g.objSize(type, rot);
+      spot = { x: t.x - Math.floor(w / 2), z: t.z - Math.floor(d / 2) };
+    }
+    this.placing = { type, rot, x: spot.x, z: spot.z, moveId, gift };
     if (existing) { this.objects.setHidden(moveId, true); this.animals.setHomeHidden(moveId, true); }
     this.tool = 'hand';
     this.ghost.show(OBJECTS[type].kind === 'tree' ? `tree:${OBJECTS[type].model}:${existing ? this.objects.treeVisual(existing) : 'sapling'}` : (OBJECTS[type].model || type), type);
     this.cursor.hide();
-    this.hud.showPlaceBar(type, existing ? 0 : this.game.objectCost(type));
+    this.hud.showPlaceBar(type, existing || gift ? 0 : g.objectCost(type), { gift });
     this.updateGhost();
+    if (!existing) {
+      this.hud.placeOk.classList.add('pulse');
+      this.guide.placementStarted();
+      this.frameGhost();
+    }
+  }
+
+  // bring the ghost into view (above the place bar, clear of the top bar) when it sits near an edge
+  frameGhost() {
+    const pts = this.ghost.corners();
+    const safe = this.hud.safeRect();
+    if (!pts.length || this.world.inSafe(pts, safe, 0.85)) return;
+    const d = this.world.rig.goal.dist;
+    this.world.frame(pts, { safe, minDist: Math.min(30, Math.max(12, d)), maxDist: Math.max(30, d) });
   }
 
   movePlacement(t) {
@@ -593,21 +710,23 @@ class Controller {
       this.finishPlacement();
       return;
     }
-    const o = g.placeObject(p.type, p.x, p.z, p.rot);
+    const o = p.gift ? g.placeGift(p.type, p.x, p.z, p.rot) : g.placeObject(p.type, p.x, p.z, p.rot);
     if (!o) return;
     this.audio.play('build');
     const pos = objectCenter(g, o);
     const [w, d] = g.objSize(o.type, o.rot);
     this.effects.burst(pos, ['#d9c27a', '#ffffff', '#a87447'], 10 + w * d, 1.2);
-    this.effects.floatText(pos.setY(1.5), `-🪙${g.lastPlaceCost ?? OBJECTS[o.type].cost}`, 'cost');
+    if (p.gift) this.effects.floatText(pos.setY(1.5), '🎁');
+    else this.effects.floatText(pos.setY(1.5), `-🪙${g.lastPlaceCost ?? OBJECTS[o.type].cost}`, 'cost');
     // cheap decor: keep placing for quick fences/paths, otherwise exit
-    if (OBJECTS[p.type].kind === 'decor' && g.s.coins >= OBJECTS[p.type].cost) {
+    if (!p.gift && OBJECTS[p.type].kind === 'decor' && g.s.coins >= OBJECTS[p.type].cost) {
       this.updateGhost();
       return;
     }
     this.finishPlacement();
+    this.guide.placed(o, p);
     const def = OBJECTS[o.type];
-    if (def.kind === 'pen') this.hud.toast(`Now buy some ${ANIMALS[def.animal].icon} in the Shop!`, 'info');
+    if (def.kind === 'pen') this.hud.toast(`Tap the ${def.name} to add ${ANIMALS[def.animal].icon}`, 'info');
   }
 
   cancelPlacement() {
@@ -615,6 +734,7 @@ class Controller {
     if (!p) return;
     if (p.moveId) { this.objects.setHidden(p.moveId, false); this.animals.setHomeHidden(p.moveId, false); }
     this.finishPlacement();
+    this.guide.placementCancelled(p);
   }
 
   finishPlacement() {
@@ -713,6 +833,7 @@ class Controller {
     this.bubbleTimer -= dt;
     if (this.bubbleTimer <= 0) { this.bubbleTimer = 0.2; this.updateBubbles(); }
     this.bubbles.update();
+    this.guide.frame(dt);
     this.world.render();
     requestAnimationFrame(() => this.loop());
   }

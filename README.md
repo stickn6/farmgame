@@ -8,13 +8,15 @@ A cozy 3D farming game built with **Vite + three.js**. Runs in the browser today
 npm install
 npm run dev      # http://localhost:5173 (also on your LAN, so you can test on a phone)
 npm run build    # production build in dist/
-npm test         # game-rule tests (Node, no browser)
-npm run sim      # pacing simulator: how long each level/unlock takes
+npm test         # game-rule and guide tests (Node, no browser)
+npm run sim      # pacing simulator: how long each level/unlock takes, bots and a guided beginner
 ```
 
 `/gallery.html?keys=coop,cow,tree:apple:fruit` (while `npm run dev` is running) shows any 3D models side by side.
 
 ## What's in the game
+
+**A guided start.** Grandma Mabel hands you her farm, which has gone a bit wild, and walks you through the first chapter (see [Tutorial and guide](#tutorial-and-guide)).
 
 **Farming.** 12 crops, from wheat (45 s) to lavender (3 h). Each crop has 4 visible growth stages, and you can swipe across a field to harvest it. Fruit trees (apple, cherry, peach) give 8 harvests before they need clearing. Crop **mastery** stars make a crop grow faster and give a chance of bonus yield.
 
@@ -58,24 +60,79 @@ npm run sim      # pacing simulator: how long each level/unlock takes
 - crops that were ripe stay ripe, and factories keep their slots;
 - a backup of the old save is stored.
 
+Saves from before the tutorial update keep their current goal (mapped onto the new goal list), skip the tour and start with hints set to *Glow only*. They get no starter debris, ripe field or free bake.
+
+## Tutorial and guide
+
+**Chapter 1, "A Fresh Start"** (about 7 minutes, levels 1–4) is a guided tour. Mabel's finger points at one thing at a time: harvest the ripe wheat, plant, deliver an order, build a coop, buy and feed chickens, plow, plant carrots, collect eggs (tidying weeds and stones while you wait), build a bakery and bake bread. The HUD fills in as each part is needed. Only the first three taps hold the screen, and even those let go after a second missed tap.
+
+Graduation ends the tour. You open a chest (gems and a Scarecrow to place), claim your first daily gift, and Mabel shows you the goal card. "I've farmed before" on her welcome card, or **Skip tour** in ⚙️ Settings, skips straight to the coached mode with the same goals.
+
+**Chapters 2 and 3** ("Barnyard Friends", "Open for Business") take the scripted goals to about level 9 or 10. Each chapter's chest holds gems and a decoration, never coins, XP or materials. After that come the endless repeat goals.
+
+**Modes** (they only move forward):
+
+| Mode | When | Help |
+|---|---|---|
+| guided | the Chapter 1 tour | the finger on every step, and a Mabel line for each |
+| coached | after graduation or a skip, and for older saves below level 10 | nothing automatic. With hints on *Full*, an idle target glows after 25 s and gets the finger after 50 s |
+| independent | after the scripted goals, or at level 10 | a glow after 45 s idle |
+
+**Show me.** Tap the goal card (👆) and the finger walks you through it, e.g. Shop → Buildings → Dairy → ✓. Long-press the card for a text hint. The card also shows what's in the way:
+- a coin bar (🪙217/400);
+- a level lock (🔒 Reach Lv 5);
+- or a materials line, which has no finger because materials drop while you farm.
+
+When the goal is a wait, a **Meanwhile** row suggests something useful to do in the meantime (collect, harvest, deliver, cook, plant, tidy up, …), or tells you everything's busy and what's ready next.
+
+**Settings** (⚙️):
+- **Hints:** *Full*, *Glow only* or *Off*. Show me always works.
+- **Tap harvests whole field.**
+- **Skip tour**, shown only during the tour.
+
+**Mabel's other appearances.**
+- She is your first visitor at level 7, asking for something you already have (when you hold enough of anything).
+- She pops up once each for a nearly full Silo or Barn, your first building material, the extra workshop slot at level 6 and that first visit.
+- From level 5, each level-up brings a one-line tip about what it unlocks.
+
+**New-farm assists.** These are plain once-per-save rules, and the pacing bot never uses them:
+- the 6 starter plots begin ripe;
+- the first bread job can be finished for free;
+- 12 bits of starter debris (weeds, stones, stumps) give 1–3 coins and a little XP each;
+- if a farm is truly stuck (no coins for seeds, nothing growing, nothing to sell), Mabel gives 🪙20, at most once a day.
+
+The planner behind all of this (`src/game/guide.js`) is pure: it reads the game and returns the next step and its target, and every purchase still needs your tap. `tools/simui.mjs` plays those steps headlessly for the tests and the sim.
+
 ## Pacing
 
 The goal: nobody unlocks everything in one sitting, the first 15 minutes are full of level-ups, and the framework leaves room for future content.
 
-Simulated with `tools/sim.mjs`. The bot plays the real rules at realistic tap speed:
+Simulated with `tools/sim.mjs`. The bots play the real rules at realistic tap speed. The **guided beginner** is a new player who does exactly what Mabel points at. It follows the real planner through a headless HUD and costs:
+- 4 s per tap, doubled the first time a kind of button is used;
+- 3 s per new Mabel line;
+- 6 s per level-up modal.
 
-| Milestone | Non-stop efficient | Engaged (~40 min/day) | Casual (~30 min/day) | Light (~16 min/day) |
-|---|---|---|---|---|
-| Chickens (L2) / Bakery (L3) | 0.5 / 1.3 min | same | same | same |
-| Cows (L5) | 7 min | 7 min | 7 min | 7 min |
-| Visitors (L7) | 23 min | day 1 | day 1 | day 1 |
-| L10 | 1 h | day 1 | day 1.2 | day 1.5 |
-| Market Wagon (L14) | 2.5 h | day 2 | day 3 | day 4.5 |
-| L20 | 7 h | day 5 | day 6 | day 10.5 |
-| L25 | — | day 8.4 | day 10 | day 21 |
-| **Last unlock (L30)** | **— (not in an 8 h sitting)** | **day 15** | **day 18** | **day 37** |
+The beginner column is the median of 5 seeds, with the range in brackets, because visitor and order requests are random.
 
-Before this update, the same simulated player unlocked **everything in ~12 minutes**. The bot plays efficiently, so real players will probably take 20–30% longer.
+| Milestone | Guided beginner (first sitting) | Non-stop efficient | Engaged (~40 min/day) | Casual (~30 min/day) | Light (~16 min/day) |
+|---|---|---|---|---|---|
+| Chickens (L2) / Bakery (L3) | 0.6 / 3 min | 0.1 / 0.9 min | same | same | same |
+| Chapter 1 (tour) done | 7.3 min | — | — | — | — |
+| Cows (L5) | 13 min | 8.5 min | 8.5 min | 4.5 h (2nd session) | 8.5 min |
+| Visitors (L7) | 27 min (26–31) | 24 min | day 1 | day 1 | day 1 |
+| L10 | 80 min (75–86) | 63 min | day 1 | day 1.2 | day 2 |
+| All scripted goals | 74 min (59–100) | — | — | — | — |
+| Market Wagon (L14) | — | 2.7 h | day 2 | day 2.6 | day 5 |
+| L20 | — | 7.4 h | day 5 | day 6.4 | day 11 |
+| L25 | — | — | day 9 | day 10 | day 17.5 |
+| **Last unlock (L30)** | — | **— (not in an 8 h sitting)** | **day 17** | **day 19** | **day 33** |
+
+Other beginner figures (median of 5 seeds):
+- the longest gap between rewards in the first 30 minutes is 95 s (worst seed 120 s);
+- about half the time is spent waiting on timers;
+- the Silo first reaches 90% at about 18 minutes.
+
+Before the v2 pacing update, the simulated player unlocked **everything in ~12 minutes**. The bots play efficiently, so real players will probably take 20–30% longer.
 
 How it's paced:
 - **XP curve.** `xpToNext(L) = 10L + L^2.8` (`config.js` → `xpToNext`).
@@ -87,14 +144,23 @@ How it's paced:
 - **Catch-up rewards.** Chores, wagon crates and project stages pay a fixed *share of your current level*. That helps casual players without letting fast players race ahead.
 
 Commands:
-- `npm run sim` prints a pacing report.
+- `npm run sim` prints a pacing report. `--profile active|casual|engaged|light|beginner` runs one profile; `--seeds n` sets the number of beginner seeds.
 - `npm run sim:check` fails if a balance change breaks these targets:
-  - L6 within 15 minutes;
-  - L10 at 45–100 minutes;
-  - L15 at 2.5–5 hours;
-  - nothing near "everything unlocked" in a single 8-hour sitting;
-  - an engaged player reaches L30 between day 13 and day 24;
-  - every level unlocks something.
+  - **Non-stop bot:**
+    - L6 within 15 minutes, but L5 no sooner than 6.5 minutes and L7 no sooner than 18;
+    - L10 at 52–100 minutes;
+    - L15 at 2.5–5 hours;
+    - nothing near "everything unlocked" in a single 8-hour sitting.
+  - **Engaged bot:** L30 between day 13 and day 24.
+  - **Every level** unlocks something.
+  - **Guided beginner, on every seed:**
+    - Chapter 1 within 10 minutes;
+    - L4 within 8 minutes;
+    - L6 at 13–25 minutes;
+    - L7 within 35 minutes;
+    - no gap over 180 s between rewards in the first 30 minutes;
+    - no planner dead ends.
+  - **Guided beginner, median seed:** every scripted goal done within 90 minutes.
 
 To add content, use the reserved levels 31+ (`FUTURE_SLOTS` in config.js). Give the new thing a level and a timer, and the price/XP formulas in config.js price it for you.
 
@@ -108,6 +174,7 @@ To add content, use the reserved levels 31+ (`FUTURE_SLOTS` in config.js). Give 
 | Tools | toolbar | `1` Hand · `2` Plow · `3` Seeds · `4` Clear |
 | Panels | toolbar · 🎁 Today · 🏆 · ⚙️ | `P` Shop · `B` Storage · `O` Orders · `Esc` close |
 | Placing buildings | drag, then ✓ | click to place · `R` rotate |
+| Help with the goal | tap the goal card (Show me) · long-press for a hint | click the goal card |
 
 ## Project structure
 
@@ -117,8 +184,12 @@ src/
   gallery.js           Dev model gallery (gallery.html)
   game/
     config.js          ALL data & balancing (items, crops, animals, recipes, buildings, storage,
-                       drops, fields, land, gems, daily, mastery, achievements, visitors, quests, XP)
+                       drops, fields, land, gems, daily, mastery, achievements, visitors, quests,
+                       chapters, XP) + the tutorial's lines, lots and tips
     state.js           Game model + rules + save/load/migration (no rendering; emits events)
+    layout.js          Pure helpers: field patches, smart building spots, plow suggestions
+    guide.js           Guide planner (pure): the next step for the current goal, Show me, Meanwhile
+    guide-keys.js      The data-guide target keys the HUD renders and the planner points at
     assets.js          Procedural model toolkit + original models, baked to 1 mesh each
     models/*.js        Additional models (buildings, decor, animals & villagers, crops & trees)
     world.js           Renderer, camera rig, lights, day/night, ground, forest, pond, road, clouds
@@ -128,9 +199,13 @@ src/
     audio.js           WebAudio synth sound effects + generative music
   ui/
     hud.js             DOM HUD: toolbar, shop, storage, orders, production, visitors, achievements…
+    guide-ui.js        Mabel's card, finger, spotlight and hints (GuideLayer + GuideController)
+    guide.css          Styles for the guide layer (imported by guide-ui.js)
     bubbles.js         Speech bubbles pinned to 3D objects
 tools/
   test.mjs             Rule tests (npm test)
+  test-guide.mjs       Planner tests, guide-follower runs and the wander fuzz (npm test)
+  simui.mjs            Headless HUD + guide follower used by the guide tests and the sim
   sim.mjs              Pacing simulator + guardrails (npm run sim / npm run sim:check)
   gallery-shot.cjs     Screenshot the model gallery (needs the dev server running)
 ```

@@ -135,7 +135,7 @@ export const RECIPES = {
 };
 
 // ---------------------------------------------------------------- placeable objects
-// kind: 'house' | 'storage' | 'special' | 'pen' | 'factory' | 'tree' | 'decor'
+// kind: 'house' | 'storage' | 'special' | 'pen' | 'factory' | 'tree' | 'decor' | 'debris'
 // limit(level): how many you may own at that level (pens get a 2nd/3rd copy later).
 const oneEach = () => 1;
 const penLimit = (unlock) => (lvl) => (lvl < unlock ? 0 : lvl < unlock + 8 ? 1 : lvl < unlock + 18 ? 2 : 3);
@@ -188,6 +188,12 @@ export const OBJECTS = {
   gazebo: { name: 'Gazebo', icon: '🛖', kind: 'decor', size: [3, 3], cost: 9000, level: 17 },
   statue: { name: 'Golden Rooster', icon: '🐓', kind: 'decor', size: [1, 1], cost: 20000, level: 20 },
   balloon: { name: 'Hot Air Balloon', icon: '🎈', kind: 'decor', size: [2, 2], cost: 40000, level: 24 },
+
+  // starter debris on a new farm ("gone a bit wild"): never sold or unlocked (level 99), cleared
+  // by tapping for a tiny one-off reward. Finite: 12 pieces, 🪙20 ⭐14 in total, no materials.
+  weed: { name: 'Weeds', icon: '🌿', kind: 'debris', size: [1, 1], cost: 0, level: 99, clear: { coins: 1, xp: 1 } },
+  stone: { name: 'Stone', icon: '🪨', kind: 'debris', size: [1, 1], cost: 0, level: 99, clear: { coins: 2, xp: 1 } },
+  stump: { name: 'Old Stump', icon: '🪵', kind: 'debris', size: [1, 1], cost: 0, level: 99, clear: { coins: 3, xp: 2 } },
 };
 
 // ---------------------------------------------------------------- derived prices & xp
@@ -336,6 +342,8 @@ export const VISITORS = {
   level: 7,
   max: (lvl) => (lvl < 7 ? 0 : lvl < 13 ? 2 : lvl < 19 ? 3 : 4),
   firstDelay: 20, // seconds after unlocking
+  // on a new farm the first visitor is always Grandma Mabel, asking for something you already hold
+  firstLine: 'Visiting my old farm! Could you spare some {item}, dear?',
   interval: min(8), // average gap between arrivals (±25%), also while the game is closed
   dismissCooldown: min(30), // a dismissed villager stays away this long
   dismissGap: min(10), // and the next arrival is at least this far away
@@ -522,26 +530,73 @@ export function producibleItems(level) {
 }
 
 // ---------------------------------------------------------------- quests (guided goals)
+// Three chapters of scripted goals; Grandma Mabel says `say` when a goal starts, `hint` is the
+// long-press help text. build / buyAnimal / expand / feed / storage goals count what you already
+// have, so doing things early never soft-locks the list. Each id is saved next to the index
+// (quest.qid), so reordering this list later is safe. Rewards stay small on purpose: the list
+// is a guide, not a faucet (a test caps the totals).
 export const QUESTS = [
-  { text: 'Harvest 6 wheat', event: 'harvest', filter: 'wheat', count: 6, reward: { coins: 10, xp: 3 }, hint: 'Swipe across golden wheat with ✋ to harvest.' },
-  { text: 'Plant 4 wheat', event: 'plant', filter: 'wheat', count: 4, reward: { coins: 10, xp: 3 }, hint: 'Pick 🌱 Seeds → Wheat, then tap your empty soil.' },
-  { text: 'Plow 2 new fields', event: 'plow', count: 2, reward: { coins: 15, xp: 3 }, hint: 'Pick the 🚜 Plow tool and tap/drag on grass.' },
-  { text: 'Deliver an order', event: 'order', count: 1, reward: { coins: 20, xp: 4 }, hint: 'Open 🚚 Orders and fill a request.' },
-  { text: 'Build a Chicken Coop', event: 'build', filter: 'coop', count: 1, reward: { coins: 30, xp: 6 }, hint: 'Open 🏪 Shop → Buildings.' },
-  { text: 'Buy 2 chickens', event: 'buyAnimal', filter: 'chicken', count: 2, reward: { coins: 30, xp: 6 }, hint: 'Shop → Animals. Tap the coop to feed them wheat.' },
-  { text: 'Collect 4 eggs', event: 'collect', filter: 'egg', count: 4, reward: { coins: 35, xp: 8 } },
-  { text: 'Build a Bakery', event: 'build', filter: 'bakery', count: 1, reward: { coins: 40, xp: 10 }, hint: 'Shop → Buildings.' },
-  { text: 'Bake 3 bread', event: 'produce', filter: 'bread', count: 3, reward: { coins: 50, xp: 12 }, hint: 'Tap the Bakery to start baking.' },
-  { text: 'Plant 6 carrots', event: 'plant', filter: 'carrot', count: 6, reward: { coins: 40, xp: 10 } },
-  { text: 'Deliver 4 orders', event: 'order', count: 4, reward: { coins: 50, xp: 15, gems: 2 } },
-  { text: 'Build a Cow Pasture', event: 'build', filter: 'cowbarn', count: 1, reward: { coins: 60, xp: 15 } },
+  // Chapter 1 "A Fresh Start" (guided tour, L1-L4)
+  { id: 'harvest', chapter: 1, text: 'Harvest 12 wheat', event: 'harvest', filter: 'wheat', count: 12, reward: { coins: 10, xp: 3 }, say: 'Your wheat is ripe, dear! Tap it to harvest.', hint: 'Tap ripe wheat with ✋ — the whole patch is harvested. Swiping works too.' },
+  { id: 'plant', chapter: 1, text: 'Plant 6 wheat', event: 'plant', filter: 'wheat', count: 6, reward: { coins: 10, xp: 3 }, say: 'Empty soil is sad soil! Tap it to plant wheat — seeds cost 🪙1.', hint: 'Tap your empty soil with ✋ to plant wheat.' },
+  { id: 'order1', chapter: 1, text: 'Deliver an order', event: 'order', count: 1, reward: { coins: 15, xp: 3 }, say: 'Folks in town post orders on this board. You\'ve got the wheat — let\'s deliver!', hint: 'Open 🚚 Orders and fill a request.' },
+  { id: 'coop', chapter: 1, text: 'Build a Chicken Coop', event: 'build', filter: 'coop', count: 1, reward: { coins: 25, xp: 4 }, say: 'Eggs sell nicely. Let\'s build a Chicken Coop!', hint: 'Open 🏪 Shop → Buildings.' },
+  { id: 'chickens', chapter: 1, text: 'Buy 2 chickens', event: 'buyAnimal', filter: 'chicken', count: 2, reward: { coins: 25, xp: 4 }, say: 'An empty coop is a sad coop. Let\'s get two chickens!', hint: 'Tap the coop, or Shop → Animals.' },
+  { id: 'feed', chapter: 1, text: 'Feed your chickens', event: 'feed', filter: 'chicken', count: 2, reward: { coins: 5, xp: 2 }, say: 'They\'re peckish! Tap the coop to feed them wheat.', hint: 'Tap the coop — chickens eat wheat.' },
+  { id: 'plow', chapter: 1, text: 'Plow 2 new fields', event: 'plow', count: 2, reward: { coins: 10, xp: 2 }, say: 'More fields, more food! Pick the Plow.', hint: 'Pick the 🚜 Plow tool and tap/drag on grass.' },
+  { id: 'carrots', chapter: 1, text: 'Plant 2 carrots', event: 'plant', filter: 'carrot', count: 2, reward: { coins: 5, xp: 2 }, say: 'Carrots grow in 2 minutes. Tap your new soil and pick Carrot!', hint: 'Tap empty soil with ✋ and pick 🥕 Carrot.' },
+  { id: 'eggs', chapter: 1, text: 'Collect 2 eggs', event: 'collect', filter: 'egg', count: 2, reward: { coins: 15, xp: 3 }, say: 'Eggs take 3 minutes. Tap the coop when they pop out!', hint: 'Fed chickens lay an egg every 3 minutes. Tap the coop to collect.' },
+  { id: 'bakery', chapter: 1, text: 'Build a Bakery', event: 'build', filter: 'bakery', count: 1, reward: { coins: 30, xp: 6 }, say: 'Bread sells for far more than plain wheat. Let\'s build a Bakery!', hint: 'Shop → Buildings. Orders are the quickest coins.' },
+  { id: 'bread', chapter: 1, text: 'Bake bread', event: 'produce', filter: 'bread', count: 1, reward: { coins: 20, xp: 5 }, say: 'Tap the Bakery, then Make on Bread.', hint: 'Tap the Bakery to start baking.' },
+  // Chapter 2 "Barnyard Friends" (L4-L6)
+  { id: 'corn', chapter: 2, text: 'Plant 4 corn', event: 'plant', filter: 'corn', count: 4, reward: { coins: 20, xp: 6 }, say: 'Corn\'s unlocked! Cows will love it — plant 4.', hint: 'Tap empty soil with ✋ and pick 🌽 Corn.' },
+  { id: 'orders3', chapter: 2, text: 'Deliver 3 orders', event: 'order', count: 3, reward: { coins: 40, xp: 10 }, say: 'Orders pay much better than the shop. Let\'s fill three!', hint: 'Open 🚚 Orders and fill requests.' },
+  { id: 'pasture', chapter: 2, text: 'Build a Cow Pasture', event: 'build', filter: 'cowbarn', count: 1, reward: { coins: 50, xp: 12 }, say: 'Time for cows! Orders will get you to 🪙400.', hint: 'Shop → Buildings. Orders are the quickest coins.' },
+  { id: 'cows', chapter: 2, text: 'Buy 2 cows', event: 'buyAnimal', filter: 'cow', count: 2, reward: { coins: 30, xp: 8 }, say: 'Two cows make a herd. They eat corn.', hint: 'Tap the pasture, or Shop → Animals.' },
   // the "Surveyor's Kit": materials for the first land expansion, handed out right before it
-  { text: 'Collect 5 milk', event: 'collect', filter: 'milk', count: 5, reward: { coins: 80, xp: 20, items: { plank: 1, bolt: 1 } } },
-  { text: 'Expand your land', event: 'expand', count: 1, reward: { coins: 80, xp: 20 }, hint: 'Shop → Land. You found planks & bolts for it!' },
-  { text: 'Build a Dairy', event: 'build', filter: 'dairy', count: 1, reward: { coins: 100, xp: 25 } },
-  { text: 'Serve 3 visitors', event: 'visitor', count: 3, reward: { coins: 120, xp: 30, gems: 2 }, hint: 'Visitors wait by the front fence — tap them.' },
-  { text: 'Upgrade your Silo', event: 'storage', count: 1, reward: { coins: 120, xp: 30 }, hint: 'Open 📦 Storage. Materials drop while you farm.' },
+  { id: 'milk', chapter: 2, text: 'Collect 2 milk', event: 'collect', filter: 'milk', count: 2, reward: { coins: 50, xp: 12, items: { plank: 1, bolt: 1 } }, say: 'Tap the pasture to collect milk — my old toolkit is yours after!', hint: 'Cows eat corn. Tap the pasture to feed them and collect.' },
+  { id: 'expand', chapter: 2, text: 'Expand your land', event: 'expand', count: 1, reward: { coins: 60, xp: 15 }, say: 'That plank and bolt are enough to clear more land. Shop → Land!', hint: 'Shop → Land. You found planks & bolts for it!' },
+  // Chapter 3 "Open for Business" (L6-L9)
+  { id: 'sunflower', chapter: 3, text: 'Plant 4 sunflowers', event: 'plant', filter: 'sunflower', count: 4, reward: { coins: 30, xp: 8 }, say: 'Sunflowers take 10 minutes — perfect while you do other things.', hint: 'Tap empty soil with ✋ and pick 🌻 Sunflower.' },
+  { id: 'cookie', chapter: 3, text: 'Bake a cookie', event: 'produce', filter: 'cookie', count: 1, reward: { coins: 30, xp: 8 }, say: 'Cookies need eggs and wheat. Worth every crumb!', hint: 'Tap the Bakery: a cookie needs 2 wheat and 2 eggs.' },
+  { id: 'dairy', chapter: 3, text: 'Build a Dairy', event: 'build', filter: 'dairy', count: 1, reward: { coins: 70, xp: 18 }, say: 'A Dairy turns milk into butter. Let\'s build one!', hint: 'Shop → Buildings.' },
+  { id: 'visitors', chapter: 3, text: 'Serve 2 visitors', event: 'visitor', count: 2, reward: { coins: 60, xp: 15, gems: 2 }, say: 'Neighbours are stopping by — they pay extra. Tap them!', hint: 'Visitors wait by the front fence — tap them.' },
+  { id: 'butter', chapter: 3, text: 'Churn butter', event: 'produce', filter: 'butter', count: 1, reward: { coins: 60, xp: 15 }, say: 'Visitors adore fresh butter. Let\'s churn some!', hint: 'Tap the Dairy: butter needs 2 milk.' },
+  { id: 'popcorn', chapter: 3, text: 'Build a Popcorn Stand', event: 'build', filter: 'popcorn', count: 1, reward: { coins: 70, xp: 18 }, say: 'Corn\'s about to get exciting — build a Popcorn Stand!', hint: 'Shop → Buildings.' },
+  { id: 'silo', chapter: 3, text: 'Upgrade your Silo', event: 'storage', count: 1, reward: { coins: 80, xp: 20 }, say: 'Out of room? Materials from farming upgrade your Silo.', hint: 'Open 📦 Storage. Materials drop while you farm.' },
+  { id: 'apple', chapter: 3, text: 'Plant 2 Apple Trees', event: 'build', filter: 'appletree', count: 2, reward: { coins: 60, xp: 15 }, say: 'Apple trees fruit 8 times! Plant two.', hint: 'Shop → Trees.' },
 ];
+
+// Finishing a chapter's `last` goal opens its chest: gems and a decoration only (never coins, XP
+// or materials). Each gift unlocks in the Shop before its chest arrives.
+export const CHAPTERS = [
+  { id: 1, name: 'A Fresh Start', icon: '🌾', last: 'bread', reward: { gems: 3, gift: 'scarecrow' } },
+  { id: 2, name: 'Barnyard Friends', icon: '🐄', last: 'expand', reward: { gems: 3, gift: 'birdbath' } },
+  { id: 3, name: 'Open for Business', icon: '🧺', last: 'apple', reward: { gems: 5, gift: 'picnic' } },
+];
+
+// v2 had 17 scripted goals; this maps a v2 quest.index to the v3 goal id (see Game.migrate)
+export const V2_QUEST_COUNT = 17;
+export const QUEST_MIGRATION_V3 = ['harvest', 'plant', 'order1', 'order1', 'coop', 'chickens', 'eggs', 'bakery', 'bread', 'carrots', 'orders3', 'pasture', 'milk', 'expand', 'dairy', 'visitors', 'silo'];
+
+// The player level a goal needs before it can be done (shown as "🔒 Reach Lv N" on the card).
+export function questLevel(q) {
+  const f = q?.filter;
+  switch (q?.event) {
+    case 'build': return OBJECTS[f]?.level ?? 1;
+    case 'buyAnimal': case 'feed': return ANIMALS[f]?.level ?? 1;
+    case 'plant': return CROPS[f]?.level ?? 1;
+    case 'harvest': return CROPS[f]?.level ?? Object.values(OBJECTS).find((o) => o.kind === 'tree' && o.fruit === f)?.level ?? 1;
+    case 'fruit': return Math.min(...Object.values(OBJECTS).filter((o) => o.kind === 'tree' && (!f || o.fruit === f)).map((o) => o.level));
+    case 'produce': { const r = RECIPES[f]; return r ? Math.max(r.level || 0, OBJECTS[r.building].level) : 1; }
+    case 'collect': return Object.values(ANIMALS).find((a) => a.product === f)?.level ?? 1;
+    case 'visitor': return VISITORS.level;
+    case 'expand': return LAND.levels[0];
+    case 'storage': return STORAGE[f || 'silo'].upgrade(0).level;
+    case 'crate': return WAGON.level;
+    default: return 1;
+  }
+}
 
 // After the scripted quests run out we generate endless ones from these templates.
 export const REPEAT_QUESTS = [
@@ -552,6 +607,117 @@ export const REPEAT_QUESTS = [
   (n, lvl) => ({ text: `Serve ${2 + Math.floor(n / 2)} visitors`, event: 'visitor', count: 2 + Math.floor(n / 2) }),
   (n, lvl) => ({ text: `Earn ${(300 + lvl * 80 + n * 150).toLocaleString('en-US')} coins`, event: 'earn', count: 300 + lvl * 80 + n * 150 }),
 ];
+
+// ---------------------------------------------------------------- tutorial & guide
+// The guide is Grandma Mabel, who hands you her farm and comes back as your first visitor.
+// The tutorial only changes presentation and input shortcuts; the few economic assists below
+// are plain once-per-save rules for new farms (see Game.newGame / freeFinishAvailable / checkSafetyNet).
+export const GUIDE = { name: 'Grandma Mabel', npc: 'mabel', icon: '👵', color: '#ffc9de' };
+
+export const TUTORIAL = {
+  // tutorial tiles are offsets from the STARTER land corner, never from landLo() (expansion moves it)
+  startLo: (MAP_SIZE - START_LAND) / 2,
+  lots: { coop: [5, 10], bakery: [11, 6] }, // where the first coop / bakery ghost starts
+  plowSuggest: [[9, 6], [9, 7]], // the two ghost plots of "Plow 2 new fields"
+  // [type, dx, dz]: the farm has "gone a bit wild" (clear of the lots, the field and building rings)
+  debris: [
+    ['weed', 4, 15], ['weed', 15, 5], ['weed', 15, 1], ['weed', 12, 15], ['weed', 15, 14], ['weed', 2, 15],
+    ['stone', 6, 15], ['stone', 15, 4], ['stone', 14, 11], ['stone', 3, 13],
+    ['stump', 14, 0], ['stump', 0, 12],
+  ],
+  patchMax: 24, // most tiles one tap harvests or plants
+  idle: { coached: [25, 50], independent: 45 }, // seconds before a glow / soft finger nudge
+  revealAfter: { level: 5, hours: 2 }, // the whole HUD shows from here on, even mid-tour
+  freeFinish: { recipe: 'bread' }, // the first bread of a new farm can be finished for free, once
+  safetyNet: { coins: 20, cooldownH: 24 }, // "Mabel's pocket money" when completely stuck
+  // Mabel's lines by step key (each <= 90 characters; {item}/{icon}/{time} are filled in by the UI)
+  lines: {
+    welcome: 'Hello, dear! I\'m Grandma Mabel. This farm is yours now — let\'s wake it up together!',
+    harvest: 'Your wheat is ripe, dear! Tap it to harvest.',
+    claim: 'Goal done! Tap Claim for your reward.',
+    plant: 'Empty soil is sad soil! Tap it to plant wheat — seeds cost 🪙1.',
+    claimL2: 'Claim it — that\'s enough ⭐ for Level 2!',
+    levelup2: 'Level 2! Chickens and carrots are yours now.',
+    levelup3: 'Level 3 — a Bakery!',
+    levelup4: 'Level 4 — corn, cookies and daily chores!',
+    order1: 'Folks in town post orders on this board. You\'ve got the wheat — let\'s deliver!',
+    order1Panel: 'Tap Deliver — the truck takes it to town.',
+    coop: 'Eggs sell nicely. Let\'s build a Chicken Coop!',
+    coopShop: 'The Coop is 🪙80. Tap it!',
+    coopPlace: 'Looks lovely there! Tap ✓ to build. (You can drag it first.)',
+    place: 'Looks lovely there! Tap ✓ to build. (You can drag it first.)',
+    cameraTip: 'Drag to look around · pinch to zoom.',
+    chickens: 'An empty coop is a sad coop. Let\'s get two chickens!',
+    chickensPanel: 'Tap Buy — then once more, so she has a friend.',
+    feed: 'They\'re peckish! Tap the coop to feed them wheat.',
+    plow: 'More fields, more food! Pick the Plow.',
+    plowTiles: 'Tap the marked grass. New fields cost a few coins.',
+    plowTip: 'Tip: drag with the Plow to make lots of fields at once.',
+    carrots: 'Carrots grow in 2 minutes. Tap your new soil and pick Carrot!',
+    eggs: 'Eggs take 3 minutes. Tap the coop when they pop out!',
+    eggsMeanwhile: 'Meanwhile, this old farm\'s gone wild — tap weeds and stones to tidy up!',
+    eggsCollected: 'Eggs! Goods go to your Barn 📦, crops to the Silo.',
+    bakery: 'Bread sells for far more than plain wheat. Let\'s build a Bakery!',
+    bakeryCoins: 'We need 🪙150 — orders are the quickest coins!',
+    bread: 'Tap the Bakery, then Make on Bread.',
+    breadWheat: 'Bread needs 3 wheat, dear — let\'s grow a little more first!',
+    breadFree: 'Bread takes 4 minutes… this first batch is on me. Tap Finish!',
+    breadCollect: 'Fresh bread! Tap it to collect.',
+    grad: 'Chapter 1 done — you\'re a natural!',
+    gradGift: 'A Scarecrow to guard your crops. Tap ✓ to put it up!',
+    gradDaily: 'And a little gift waits for you every day you visit!',
+    gradEnd: 'Your next goal is always up here. Tap it and I\'ll show you the way!',
+    skipConfirm: 'Skip the tour? Tap your goal card any time and I\'ll still show you the way.',
+    // one-time interrupts (guided & coached)
+    siloFull: 'Your Silo is nearly full, dear! Sell some extras — orders pay even more.',
+    barnFull: 'Your Barn is nearly full, dear! Sell some extras — orders pay even more.',
+    firstDrop: 'A {icon} {item}! Materials drop while you farm — they upgrade storage and land.',
+    slot6: 'Workshops can hold one more job now — tap the 🔒 slot in the Bakery.',
+    firstVisitor: 'Yoo-hoo, it\'s me, dear! Visitors pay extra — tap me to see what I\'d like.',
+    firstVisitorPanel: VISITORS.firstLine,
+    migratedTip: 'New: tap your goal card and I\'ll show you the way 👆',
+    safetyNet: 'A little something to get you going, dear.',
+    busy: 'Everything\'s busy! Next: {icon} {time}',
+  },
+};
+// the Chapter 1 tour lines: shown once each; Skip and old saves mark them all as seen
+TUTORIAL.ch1Lines = ['welcome', 'harvest', 'claim', 'plant', 'claimL2', 'levelup2', 'levelup3', 'levelup4', 'order1', 'order1Panel',
+  'coop', 'coopShop', 'coopPlace', 'place', 'cameraTip', 'chickens', 'chickensPanel', 'feed', 'plow', 'plowTiles', 'plowTip', 'carrots',
+  'eggs', 'eggsMeanwhile', 'eggsCollected', 'bakery', 'bakeryCoins', 'bread', 'breadWheat', 'breadFree', 'breadCollect',
+  'grad', 'gradGift', 'gradDaily', 'gradEnd', 'skipConfirm'];
+
+// absolute tile of a tutorial offset ([dx, dz] from TUTORIAL.startLo)
+export const tutorialTile = ([dx, dz]) => [TUTORIAL.startLo + dx, TUTORIAL.startLo + dz];
+
+// One short tip per level, shown once after the level-up (each <= 80 characters).
+export const FEATURE_TIPS = {
+  5: 'Cows give milk every 8 min — they eat corn. Materials start dropping now too!',
+  6: 'Sunflowers take 10 min — plant them before a break. Land expansion is open!',
+  7: 'The Dairy turns milk into butter — and visitors start dropping by!',
+  8: 'Tomatoes and a Popcorn Stand! Popcorn is worth far more than raw corn.',
+  9: 'Apple trees fruit 8 times. Butter Popcorn is a top seller!',
+  10: 'Pigs sniff out truffles — they eat carrots. You can build a 2nd coop now.',
+  11: 'Sugarcane becomes sugar at the Sugar Mill. Theo the Fisher may visit!',
+  12: 'Sheep grow wool, and the Loom knits it into sweaters.',
+  13: 'Strawberries and a Juice Press — tomatoes and apples become juice.',
+  14: 'The Market Wagon parks by the road — fill all its crates for a bonus!',
+  15: 'Bees make honey all by themselves — no feeding needed.',
+  16: 'The Old Bridge needs help — donate coins and goods in stages.',
+  17: 'Pumpkins take an hour — perfect before you log off.',
+  18: 'The Candle Shop turns honey into candles.',
+  19: 'Cotton becomes shirts at the Loom.',
+  20: 'Goats give rich milk — they eat sunflowers.',
+  21: 'The Bandstand project is open — finish it for better wagon pay.',
+  22: 'Chili makes Spicy Popcorn. Another production slot is available too!',
+  23: 'Peach trees! A 3rd pasture and a 2nd apiary are allowed now.',
+  24: 'One more order slot — more orders, more coins.',
+  25: 'Lavender, and the Greenhouse project — it makes every crop grow faster.',
+  26: 'Lavender Candles — the fanciest thing in the valley.',
+  27: 'Peach Jam: peaches and sugar at the Juice Press.',
+  28: 'Caramel Corn — corn has never been so fancy.',
+  29: 'Cozy Quilts need a shirt and a sweater — the ultimate gift.',
+  30: 'The Master Farmhouse project is open. You\'re a true farmer, dear!',
+};
 
 // Levels where future content can slot in without rebalancing (keep these in mind when adding features).
 // Planned next: seasons & festivals (L32), bigger map (L33), fishing (L34), farm kitchen (L36),

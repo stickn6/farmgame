@@ -1,8 +1,27 @@
 // DOM overlay UI. Designed touch-first (big hit targets, bottom sheets) so it ports to mobile.
+// Every element a guide may point at carries data-guide="<key>" (see the spec's key list);
+// groups the tutorial reveals step by step carry data-reveal="<key>".
+import * as CONFIG from '../game/config.js';
 import {
   ITEMS, CROPS, ANIMALS, OBJECTS, RECIPES, STORAGE, ACHIEVEMENTS, DAILY, VISITORS, MASTERY, PLOTS,
   CHORES, WAGON, PROJECTS, xpForLevel, unlocksAtLevel, nextUnlockLevel,
 } from '../game/config.js';
+
+// What a guide layer can plug into. All optional: with these defaults the game is fully playable unguided.
+const DEFAULT_HOOKS = {
+  onQuestTap: null, // () tap on a quest card that can't be claimed; null → text hint toast
+  onMeanwhileTap: null, // () tap on the quest card's "Meanwhile" row
+  levelUpGo: null, // (level) → true turns the level-up button into "Let's go! ▸"
+  onLevelUpGo: null, // (level) after that button closed the modal
+  onMissing: null, // (item) after a red "missing" chip closed its panel; null → hint toast, panel stays
+  onSkipTour: null, // () settings "Skip tour"; null hides the button
+  preferredTab: null, // (panelId) → tab id for a tabbed panel opened without one
+  goalRecipe: null, // (factoryType) → recipe id that gets a "Goal" badge
+  isGoal: null, // (guideKey) → true pulses that button (pen:buy)
+  visitorLine: null, // (visitor) → line shown instead of the villager's usual one
+  onSettings: null, // (key, value) a guide setting changed (hints, tapHarvest)
+  onUiChange: null, // (reason) panel / tab / modal / popover / placement / tool changed
+};
 
 // tiny hyperscript helper
 export function h(tag, attrs = {}, ...children) {
@@ -29,9 +48,18 @@ export function fmtTime(sec) {
   return `${Math.floor(hr / 24)}d ${hr % 24}h`;
 }
 
+// countdown clock: 2:31, 1:02:31
+export function fmtClock(sec) {
+  sec = Math.max(0, Math.ceil(sec));
+  const hr = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = String(sec % 60).padStart(2, '0');
+  return hr ? `${hr}:${String(m).padStart(2, '0')}:${s}` : `${m}:${s}`;
+}
+
 const fmtNum = (n) => n.toLocaleString('en-US');
-const itemList = (req, g) => Object.entries(req).map(([i, n]) => h('span', { class: 'r-in ' + (!g || g.count(i) >= n ? 'ok' : 'miss') }, `${ITEMS[i].icon}${g ? `${g.count(i)}/` : '×'}${n}`));
 const stars = (n, max = 3) => '★'.repeat(n) + '☆'.repeat(Math.max(0, max - n));
+const giftType = (gf) => (typeof gf === 'string' ? gf : gf?.type);
+// visible on screen: attached, not display:none and not inside a not-yet-revealed group
+const isShown = (el) => !!el && el.isConnected && !el.closest('.hud-hidden, .hidden');
 
 export class HUD {
   constructor(root, game, ctrl, audio) {
@@ -40,71 +68,113 @@ export class HUD {
     this.ctrl = ctrl;
     this.audio = audio;
     this.panel = null;
+    this.hooks = { ...DEFAULT_HOOKS };
+    this.questGuide = null;
+    this.seedPop = null;
+    this.revealSet = 'all';
     this.build();
     this.bind();
     this.refreshAll();
     setInterval(() => this.tick(), 1000);
   }
 
+  // ---------------------------------------------------------------- guide hooks
+  setHooks(hooks) { Object.assign(this.hooks, hooks); }
+  hasHook(name) { return typeof this.hooks?.[name] === 'function'; }
+
+  // a buggy guide must never break the HUD
+  hook(name, ...args) {
+    if (!this.hasHook(name)) return undefined;
+    try { return this.hooks[name](...args); } catch (e) { console.error(`hud hook ${name}:`, e); return undefined; }
+  }
+
+  uiChanged(reason) { this.hook('onUiChange', reason); }
+
+  // Fly-to targets: hidden HUD groups hand their "fly here" role to the quest card or the coin pill.
+  get barnBtn() { return this.flyTarget(this.barnBtnEl); }
+  get levelBox() { return this.flyTarget(this.levelBoxEl); }
+  get gemsPill() { return this.flyTarget(this.gemsPillEl); }
+
+  flyTarget(el) {
+    if (!el || isShown(el)) return el;
+    if (el !== this.gemsPillEl && isShown(this.questCard)) return this.questCard;
+    return this.coinsPill;
+  }
+
   // ---------------------------------------------------------------- layout
   build() {
     this.coinsEl = h('span', { class: 'num' }, '0');
-    this.coinsPill = h('div', { class: 'pill coins', onclick: () => this.openBarn() }, h('span', { class: 'ico' }, '🪙'), this.coinsEl);
+    this.coinsPill = h('div', { class: 'pill coins', 'data-guide': 'pill:coins', onclick: () => this.openBarn() }, h('span', { class: 'ico' }, '🪙'), this.coinsEl);
     this.gemsEl = h('span', { class: 'num' }, '0');
-    this.gemsPill = h('div', { class: 'pill gems', onclick: () => this.toast('💎 Gems: earn them from level-ups, achievements, mastery and daily gifts. Use them to finish timers.', 'info') }, h('span', { class: 'ico' }, '💎'), this.gemsEl);
+    this.gemsPillEl = h('div', { class: 'pill gems', 'data-guide': 'pill:gems', 'data-reveal': 'gems', onclick: () => this.toast('💎 Gems: earn them from level-ups, achievements, mastery and daily gifts. Use them to finish timers.', 'info') }, h('span', { class: 'ico' }, '💎'), this.gemsEl);
     this.levelNum = h('div', { class: 'level-num' }, '1');
     this.xpFill = h('div', { class: 'xp-fill' });
     this.xpText = h('div', { class: 'xp-text' }, '');
     this.nextHint = h('div', { class: 'next-hint' }, '');
-    this.levelBox = h('div', { class: 'level-box', onclick: () => this.openFarmhouse('progress') },
+    this.levelBoxEl = h('div', { class: 'level-box', 'data-guide': 'level:box', 'data-reveal': 'level', onclick: () => this.openFarmhouse('progress') },
       h('div', { class: 'level-star' }, this.levelNum),
       h('div', { class: 'xp-col' }, h('div', { class: 'xp-bar' }, this.xpFill, this.xpText), this.nextHint),
     );
     const badge = () => h('span', { class: 'badge hidden' }, '');
-    this.dailyBtn = h('button', { class: 'round-btn', title: 'Today: gift & chores', onclick: () => this.openToday() }, '🎁', badge());
-    this.trophyBtn = h('button', { class: 'round-btn', title: 'Achievements', onclick: () => this.openFarmhouse('achievements') }, '🏆', badge());
-    this.settingsBtn = h('button', { class: 'round-btn', title: 'Farm & settings', onclick: () => this.openFarmhouse('farm') }, '⚙️');
+    this.dailyBtn = h('button', { class: 'round-btn', title: 'Today: gift & chores', 'data-guide': 'btn:today', 'data-reveal': 'today', onclick: () => this.openToday() }, '🎁', badge());
+    this.trophyBtn = h('button', { class: 'round-btn', title: 'Achievements', 'data-guide': 'btn:trophy', 'data-reveal': 'trophy', onclick: () => this.openFarmhouse('achievements') }, '🏆', badge());
+    this.settingsBtn = h('button', { class: 'round-btn', title: 'Farm & settings', 'data-guide': 'btn:settings', onclick: () => this.openFarmhouse('farm') }, '⚙️');
 
     this.questIcon = h('div', { class: 'q-icon' }, '📜');
     this.questText = h('div', { class: 'q-text' }, '');
     this.questFill = h('div', { class: 'q-fill' });
     this.questProg = h('div', { class: 'q-prog' }, '');
-    this.questClaim = h('button', { class: 'btn small claim', onclick: (e) => { e.stopPropagation(); this.ctrl.claimQuest(); } }, 'Claim!');
-    this.questCard = h('div', { class: 'quest-card', onclick: () => this.questHint() },
+    this.questChapter = h('div', { class: 'q-chapter hidden' });
+    this.questBlock = h('div', { class: 'q-block hidden' });
+    this.questWait = h('span', { class: 'q-wait' });
+    this.questMwLabel = h('span', { class: 'q-mw-label' });
+    this.questMwPoint = h('span', { class: 'q-point' }, '👆');
+    this.questMeanwhile = h('div', { class: 'q-meanwhile hidden', 'data-guide': 'quest:meanwhile', onclick: (e) => {
+      e.stopPropagation();
+      if (!this.questGuide?.meanwhile) return;
+      this.audio.play('click');
+      this.hook('onMeanwhileTap');
+    } }, this.questWait, h('span', { class: 'q-mw-main' }, this.questMwLabel, this.questMwPoint));
+    this.questShowMe = h('div', { class: 'q-showme hidden' }, '👆');
+    this.questClaim = h('button', { class: 'btn small claim', 'data-guide': 'quest:claim', onclick: (e) => { e.stopPropagation(); this.ctrl.claimQuest(); } }, 'Claim!');
+    this.questCard = h('div', { class: 'quest-card', 'data-guide': 'quest:card', 'data-reveal': 'quest' },
       this.questIcon,
-      h('div', { class: 'q-body' }, this.questText, h('div', { class: 'q-bar' }, this.questFill, this.questProg)),
+      h('div', { class: 'q-body' }, this.questChapter, this.questText, h('div', { class: 'q-bar' }, this.questFill, this.questProg), this.questBlock),
       this.questClaim,
+      this.questShowMe,
+      this.questMeanwhile,
     );
+    this.bindQuestCard();
 
-    const top = h('div', { class: 'top-bar' },
-      h('div', { class: 'top-left' }, this.levelBox, this.questCard),
-      h('div', { class: 'top-right' },
-        h('div', { class: 'pills' }, this.coinsPill, this.gemsPill),
-        h('div', { class: 'round-btns' }, this.dailyBtn, this.trophyBtn, this.settingsBtn),
-      ),
+    this.pills = h('div', { class: 'pills' }, this.coinsPill, this.gemsPillEl);
+    this.roundBtns = h('div', { class: 'round-btns' }, this.dailyBtn, this.trophyBtn, this.settingsBtn);
+    this.topBar = h('div', { class: 'top-bar' },
+      h('div', { class: 'top-left' }, this.levelBoxEl, this.questCard),
+      h('div', { class: 'top-right' }, this.pills, this.roundBtns),
     );
 
     // tool bar
-    const tool = (id, icon, label, key) => h('button', { class: 'tool', 'data-tool': id, onclick: () => { this.audio.play('click'); this.ctrl.setTool(id); } },
+    const tool = (id, icon, label, key) => h('button', { class: 'tool', 'data-tool': id, 'data-guide': 'tool:' + id, onclick: () => { this.audio.play('click'); this.ctrl.setTool(id); } },
       h('span', { class: 'ico' }, icon), h('span', { class: 'lbl' }, label), key ? h('span', { class: 'key' }, key) : null);
-    const action = (id, icon, label, fn) => h('button', { class: 'tool action', id: 'btn-' + id, onclick: () => { this.audio.play('click'); fn(); } },
+    const action = (id, icon, label, fn) => h('button', { class: 'tool action', id: 'btn-' + id, 'data-guide': 'btn:' + id, 'data-reveal': id, onclick: () => { this.audio.play('click'); fn(); } },
       h('span', { class: 'ico' }, icon), h('span', { class: 'lbl' }, label), badge());
     this.toolButtons = [tool('hand', '✋', 'Hand', '1'), tool('plow', '🚜', 'Plow', '2'), tool('seed', '🌱', 'Seeds', '3'), tool('remove', '🧹', 'Clear', '4')];
     this.shopBtn = action('shop', '🏪', 'Shop', () => this.openShop());
-    this.barnBtn = action('barn', '📦', 'Barn', () => this.openBarn());
+    this.barnBtnEl = action('barn', '📦', 'Barn', () => this.openBarn());
     this.ordersBtn = action('orders', '🚚', 'Orders', () => this.openOrders());
     this.toolbar = h('div', { class: 'toolbar' },
-      h('div', { class: 'tool-group' }, this.toolButtons),
-      h('div', { class: 'tool-sep' }),
-      h('div', { class: 'tool-group' }, this.shopBtn, this.barnBtn, this.ordersBtn),
+      h('div', { class: 'tool-group', 'data-reveal': 'tools' }, this.toolButtons),
+      h('div', { class: 'tool-sep', 'data-reveal': 'tools' }),
+      h('div', { class: 'tool-group' }, this.shopBtn, this.barnBtnEl, this.ordersBtn),
     );
 
     this.seedBar = h('div', { class: 'seed-bar hidden' });
+    this.placeOk = h('button', { class: 'btn round green', 'data-guide': 'place:ok', onclick: () => this.ctrl.confirmPlacement() }, '✓');
     this.placeBar = h('div', { class: 'place-bar hidden' },
       h('div', { class: 'place-info' }),
-      h('button', { class: 'btn round red', onclick: () => this.ctrl.cancelPlacement() }, '✕'),
-      h('button', { class: 'btn round', onclick: () => this.ctrl.rotatePlacement() }, '⟳'),
-      h('button', { class: 'btn round green', onclick: () => this.ctrl.confirmPlacement() }, '✓'),
+      h('button', { class: 'btn round red', 'data-guide': 'place:cancel', onclick: () => this.ctrl.cancelPlacement() }, '✕'),
+      h('button', { class: 'btn round', 'data-guide': 'place:rotate', onclick: () => this.ctrl.rotatePlacement() }, '⟳'),
+      this.placeOk,
     );
     this.toolHint = h('div', { class: 'tool-hint hidden' });
     this.toasts = h('div', { class: 'toasts' });
@@ -114,8 +184,32 @@ export class HUD {
     this.modalLayer.addEventListener('pointerdown', () => { this._pressing = true; }, true);
     window.addEventListener('pointerup', () => setTimeout(() => { this._pressing = false; }, 0), true);
     window.addEventListener('pointercancel', () => { this._pressing = false; }, true);
+    window.addEventListener('resize', () => { this.closeSeedPopover(); this.layoutTop(); });
 
-    this.root.append(top, this.toolHint, this.seedBar, this.placeBar, this.toolbar, this.toasts, this.modalLayer, this.fx);
+    this.root.append(this.topBar, this.toolHint, this.seedBar, this.placeBar, this.toolbar, this.toasts, this.modalLayer, this.fx);
+    this.revealEls = [...this.root.querySelectorAll('[data-reveal]')];
+  }
+
+  // Quest card: tap = claim when done, else the guide's Show me (or a text hint); long-press = text hint.
+  bindQuestCard() {
+    const card = this.questCard;
+    let timer = null, long = false;
+    const cancel = () => { clearTimeout(timer); timer = null; };
+    card.addEventListener('pointerdown', (e) => {
+      long = false;
+      cancel();
+      if (e.target.closest('.claim, .q-meanwhile')) return;
+      timer = setTimeout(() => { timer = null; long = true; this.audio.play('click'); this.questHint(true); }, 500);
+    });
+    for (const ev of ['pointerup', 'pointercancel', 'pointerleave']) card.addEventListener(ev, cancel);
+    card.addEventListener('contextmenu', (e) => e.preventDefault());
+    card.addEventListener('click', () => {
+      if (long) { long = false; return; }
+      if (this.game.questDone()) { this.ctrl.claimQuest(); return; }
+      this.audio.play('click');
+      if (this.hasHook('onQuestTap')) this.hook('onQuestTap');
+      else this.questHint(true);
+    });
   }
 
   bind() {
@@ -132,6 +226,7 @@ export class HUD {
     g.on('project', () => this.refreshPanel());
     g.on('hearts', ({ npc, hearts, reward }) => { this.audio.play('quest'); this.toast(`${npc.icon} ${npc.name} ${'❤️'.repeat(Math.min(3, Math.ceil(hearts / 5)))} ${hearts} hearts — ${reward.text}!`, 'good'); });
     g.on('quest', () => this.refreshQuest());
+    g.on('coins', () => { if (this.questGuide?.block?.kind === 'coins') this.renderQuestGuide(); });
     g.on('questComplete', () => { this.audio.play('quest'); this.refreshQuest(); this.questCard.classList.add('done-flash'); });
     g.on('toast', (t) => this.toast(t.text, t.type));
     g.on('levelup', (d) => this.showLevelUp(d));
@@ -194,12 +289,80 @@ export class HUD {
     this.questCard.classList.toggle('done', done);
     this.questClaim.classList.toggle('hidden', !done);
     this.questIcon.textContent = done ? '🎁' : '📜';
+    this.renderQuestGuide();
   }
 
-  questHint() {
+  // hintOnly: show the text hint even when the goal could be claimed (long-press)
+  questHint(hintOnly = false) {
     const q = this.game.currentQuest();
-    if (this.game.questDone()) { this.ctrl.claimQuest(); return; }
+    if (!hintOnly && this.game.questDone()) { this.ctrl.claimQuest(); return; }
     this.toast(q.hint || `Goal: ${q.text}`, 'info');
+  }
+
+  // The guide describes the current goal; null clears it. Shape:
+  // { chapter: {id,name,icon,done,total}|null, block: {kind:'coins'|'level'|'materials', text?, have?, need?, level?, items?}|null,
+  //   wait: {icon, until, label?}|null, meanwhile: {icon, label, text?}|null, showMe: bool }
+  // meanwhile.text replaces the whole "Meanwhile: <icon> <label>" wording (e.g. "Everything's busy!").
+  setQuestGuide(info) {
+    // the guide may call this several times a second; only rebuild when something changed
+    const sig = info ? JSON.stringify(info) : '';
+    if (sig === this._questGuideSig) return;
+    this._questGuideSig = sig;
+    this.questGuide = info || null;
+    this.renderQuestGuide();
+  }
+
+  renderQuestGuide() {
+    if (!this.questChapter) return;
+    const info = this.questGuide || {};
+    const done = this.game.questDone();
+    const ch = info.chapter;
+    this.questChapter.classList.toggle('hidden', !ch);
+    if (ch) {
+      this.questChapter.textContent = `Ch.${ch.id} · ${ch.done ?? 0}/${ch.total ?? '?'} 🎁`;
+      this.questChapter.title = ch.name ? `Chapter ${ch.id}: ${ch.name}` : '';
+    }
+    this.renderQuestBlock(done ? null : info.block);
+    const mw = !done && info.meanwhile;
+    const wait = !done && info.wait;
+    this.questMeanwhile.classList.toggle('hidden', !mw && !wait);
+    this.questMeanwhile.classList.toggle('tappable', !!mw);
+    const line = mw ? mw.text || `Meanwhile: ${mw.icon || ''} ${mw.label || ''}` : wait?.label || '';
+    this.questMwLabel.textContent = line.replace(/\s+/g, ' ').trim();
+    this.questMwPoint.classList.toggle('hidden', !mw);
+    this.questShowMe.classList.toggle('hidden', done || !info.showMe);
+    this.updateQuestTimer();
+    this.layoutTop();
+  }
+
+  renderQuestBlock(b) {
+    const el = this.questBlock;
+    el.className = 'q-block' + (b ? ' ' + b.kind : ' hidden');
+    el.innerHTML = '';
+    if (!b) return;
+    if (b.kind === 'coins') {
+      const need = b.need || 1;
+      const have = Math.min(need, b.have ?? this.game.s.coins);
+      el.append(h('div', { class: 'q-coinbar' }, h('div', { style: `width:${Math.min(100, (have / need) * 100)}%` }), h('span', {}, b.text || `🪙${fmtNum(Math.floor(have))}/${fmtNum(need)}`)));
+    } else if (b.kind === 'level') {
+      el.textContent = b.text || `🔒 Reach Lv ${b.level ?? '?'}${b.need ? ` · ⭐ ${fmtNum(b.have ?? 0)}/${fmtNum(b.need)}` : ''}`;
+    } else {
+      const items = b.items ? Object.entries(b.items).map(([i, n]) => `${ITEMS[i]?.icon || i}${n}`).join(' ') : '';
+      el.textContent = b.text || `🧰 needs ${items} · drops while you farm`;
+    }
+  }
+
+  // the "⏳ 🥚 2:31" countdown in the Meanwhile row (ticks every second)
+  updateQuestTimer() {
+    const w = !this.game.questDone() && this.questGuide?.wait;
+    this.questWait.classList.toggle('hidden', !w);
+    if (w) this.questWait.textContent = `⏳ ${w.icon ? w.icon + ' ' : ''}${fmtClock(((w.until ?? 0) - this.game.now()) / 1000)}${this.questGuide.meanwhile || w.label ? ' ·' : ''}`;
+  }
+
+  // the tool hint sits just under the (variable-height) top bar on phones
+  layoutTop() {
+    if (!this.topBar?.isConnected) return;
+    this.root.style.setProperty('--hud-top', Math.round(this.topBar.getBoundingClientRect().bottom) + 'px');
   }
 
   setBadge(btn, n, text) {
@@ -217,14 +380,70 @@ export class HUD {
     this.setBadge(this.dailyBtn, today, today > 1 ? today : '!');
     let full = false;
     for (const id of Object.keys(STORAGE)) if (g.storageUsed(id) >= g.storageCap(id)) full = true;
-    this.setBadge(this.barnBtn, full ? 1 : 0, '!');
+    this.setBadge(this.barnBtnEl, full ? 1 : 0, '!');
   }
 
   setTool(tool) {
     for (const b of this.toolButtons) b.classList.toggle('active', b.dataset.tool === tool);
     this.seedBar.classList.toggle('hidden', tool !== 'seed');
     if (tool === 'seed') this.renderSeedBar();
+    if (tool !== 'hand') this.closeSeedPopover();
     this.refreshToolHint(tool);
+    this.uiChanged('tool');
+  }
+
+  // ---------------------------------------------------------------- progressive reveal
+  // keys: quest, barn, level, gems, orders, shop, tools, today, trophy ('all' = everything).
+  // Hidden groups keep their layout slot (top bar) or collapse (toolbar), and pop in when revealed.
+  setReveal(keys) {
+    const all = keys == null || keys === 'all';
+    this.revealSet = all ? 'all' : new Set(keys);
+    this.applyReveal();
+  }
+
+  reveal(...keys) {
+    if (this.revealSet === 'all') return;
+    for (const k of keys.flat()) this.revealSet.add(k);
+    this.applyReveal();
+  }
+
+  revealed(key) { return this.revealSet === 'all' || this.revealSet.has(key); }
+
+  // the reveal key that would make this element visible, or null when nothing hides it
+  revealKeyFor(el) {
+    const hidden = el?.closest?.('.hud-hidden[data-reveal]');
+    return hidden ? hidden.dataset.reveal : null;
+  }
+
+  applyReveal() {
+    let changed = false;
+    for (const el of this.revealEls) {
+      const show = this.revealed(el.dataset.reveal);
+      const was = !el.classList.contains('hud-hidden');
+      if (show === was) continue;
+      changed = true;
+      el.classList.toggle('hud-hidden', !show);
+      if (show) this.popIn(el);
+    }
+    // a toolbar with nothing revealed hides its frame too (it keeps its height for safeRect)
+    const anyTool = this.revealEls.some((el) => this.toolbar.contains(el) && !el.classList.contains('hud-hidden'));
+    if (this.toolbar.classList.contains('hud-hidden') === anyTool) {
+      this.toolbar.classList.toggle('hud-hidden', !anyTool);
+      if (anyTool) this.popIn(this.toolbar);
+    }
+    if (changed) { this.layoutTop(); this.uiChanged('reveal'); }
+  }
+
+  popIn(el) {
+    el.classList.remove('hud-pop');
+    void el.offsetWidth;
+    el.classList.add('hud-pop');
+    const done = (e) => {
+      if (e.target !== el) return; // badges inside animate too
+      el.classList.remove('hud-pop');
+      el.removeEventListener('animationend', done);
+    };
+    el.addEventListener('animationend', done);
   }
 
   refreshToolHint(tool = this.ctrl.tool) {
@@ -256,6 +475,7 @@ export class HUD {
       const st = g.masteryStars(id);
       const card = h('button', {
         class: 'seed-card' + (this.ctrl.seed === id ? ' active' : '') + (locked ? ' locked' : ''),
+        'data-guide': 'seedbar:' + id,
         onclick: () => {
           if (locked) { this.toast(`${c.name} unlocks at level ${c.level}`, 'bad'); return; }
           this.audio.play('click');
@@ -272,21 +492,152 @@ export class HUD {
     }
   }
 
-  showPlaceBar(type, cost) {
+  // opts.gift: placing a free chapter gift (shows "🎁 Gift" instead of a price)
+  showPlaceBar(type, cost, opts = {}) {
     const info = this.placeBar.querySelector('.place-info');
     info.innerHTML = '';
-    info.append(h('span', { class: 'place-name' }, `${OBJECTS[type].icon || ''} ${OBJECTS[type].name}`), cost ? h('span', { class: 'place-cost' }, `🪙 ${fmtNum(cost)}`) : null);
+    info.append(h('span', { class: 'place-name' }, `${OBJECTS[type].icon || ''} ${OBJECTS[type].name}`),
+      opts.gift ? h('span', { class: 'place-cost gift' }, '🎁 Gift · free') : cost ? h('span', { class: 'place-cost' }, `🪙 ${fmtNum(cost)}`) : null);
+    this.closeSeedPopover();
     this.placeBar.classList.remove('hidden');
     this.toolbar.classList.add('hidden');
     this.seedBar.classList.add('hidden');
     this.toolHint.textContent = matchMedia('(pointer: coarse)').matches ? 'Drag to position · ✓ to place' : 'Click to place · R to rotate · Esc to cancel';
     this.toolHint.classList.remove('hidden');
+    this.uiChanged('placement');
   }
 
   hidePlaceBar() {
     this.placeBar.classList.add('hidden');
+    this.placeOk.classList.remove('pulse');
     this.toolbar.classList.remove('hidden');
     this.setTool(this.ctrl.tool);
+    this.uiChanged('placement');
+  }
+
+  // ---------------------------------------------------------------- seed popover (tap empty soil)
+  // opts: { x, z, screen:{x,y}, crops:[{type, tag:'goal'|'order'|null}] | ['wheat',…], onPick(type), onMore() }
+  openSeedPopover(opts, z, screen) {
+    if (typeof opts === 'number') opts = { x: opts, z, screen };
+    this.closeSeedPopover();
+    const g = this.game;
+    const sp = opts.screen || { x: innerWidth / 2, y: innerHeight / 2 };
+    const crops = (opts.crops || this.defaultSeedList()).map((c) => (typeof c === 'string' ? { type: c, tag: null } : c)).filter((c) => CROPS[c?.type]);
+    const tags = { goal: '★ Goal', order: '★ Order' };
+    const list = h('div', { class: 'seed-pop-list' });
+    for (const c of crops) {
+      const def = CROPS[c.type];
+      const poor = g.s.coins < def.seedCost;
+      list.append(h('button', {
+        class: 'seed-card pop' + (c.tag ? ' ' + c.tag : '') + (poor ? ' poor' : '') + (this.ctrl.seed === c.type ? ' active' : ''),
+        'data-guide': 'seed:' + c.type,
+        onclick: () => {
+          if (poor) { this.toast(`${def.name} seeds cost 🪙${def.seedCost} — not enough coins!`, 'bad'); return; }
+          this.audio.play('click');
+          this.closeSeedPopover();
+          if (opts.onPick) opts.onPick(c.type);
+          else { this.ctrl.seed = c.type; this.ctrl.setTool('seed'); }
+        },
+      },
+      c.tag && tags[c.tag] ? h('div', { class: 'seed-tag' }, tags[c.tag]) : null,
+      h('div', { class: 'seed-ico' }, ITEMS[c.type].icon),
+      h('div', { class: 'seed-name' }, def.name),
+      h('div', { class: 'seed-meta' }, `🪙${def.seedCost} · ${fmtTime(g.cropTime(c.type) / 1000)}`),
+      ));
+    }
+    list.append(h('button', { class: 'seed-card pop more', 'data-guide': 'seed:more', onclick: () => {
+      this.audio.play('click');
+      this.closeSeedPopover();
+      if (opts.onMore) opts.onMore();
+      else this.ctrl.setTool('seed');
+    } }, h('div', { class: 'seed-ico' }, '🌱'), h('div', { class: 'seed-name' }, 'Seeds tool ▸'), h('div', { class: 'seed-meta' }, 'drag to plant')));
+    const arrow = h('div', { class: 'seed-pop-arrow' });
+    const el = h('div', { class: 'seed-pop' }, list, arrow);
+    el.addEventListener('pointerdown', (e) => e.stopPropagation());
+    this.root.append(el);
+    // anchor above the tile; flip below when the top bar is in the way
+    const safe = this.safeRect({ band: true });
+    const w = el.offsetWidth, ht = el.offsetHeight; // layout size (the pop-in scale would skew a bounding rect)
+    const left = Math.max(8, Math.min(innerWidth - 8 - w, sp.x - w / 2));
+    let top = sp.y - 16 - ht;
+    const below = top < safe.top;
+    if (below) top = Math.min(sp.y + 16, innerHeight - 8 - ht);
+    el.style.left = left + 'px';
+    el.style.top = top + 'px';
+    el.classList.toggle('below', below);
+    arrow.style.left = Math.max(18, Math.min(w - 18, sp.x - left)) + 'px';
+    // a tap anywhere else closes it (and still does what it would have done)
+    const outside = (e) => { if (!el.contains(e.target)) this.closeSeedPopover(); };
+    setTimeout(() => { if (this.seedPop?.el === el) document.addEventListener('pointerdown', outside, true); }, 0);
+    this.seedPop = { el, x: opts.x, z: opts.z, outside };
+    this.uiChanged('popover');
+    return el;
+  }
+
+  // unlocked crops: last used first, then newest unlock first
+  defaultSeedList() {
+    const g = this.game;
+    const ids = Object.keys(CROPS).filter((id) => g.isUnlocked('crops', id)).sort((a, b) => CROPS[b].level - CROPS[a].level);
+    const last = ids.indexOf(this.ctrl.seed);
+    if (last > 0) ids.unshift(...ids.splice(last, 1));
+    return ids;
+  }
+
+  closeSeedPopover() {
+    const p = this.seedPop;
+    if (!p) return;
+    this.seedPop = null;
+    document.removeEventListener('pointerdown', p.outside, true);
+    p.el.classList.add('out');
+    setTimeout(() => p.el.remove(), 150);
+    this.uiChanged('popover');
+  }
+
+  // { x, z } of the tile the open popover belongs to, or null
+  seedPopoverOpen() { return this.seedPop ? { x: this.seedPop.x, z: this.seedPop.z } : null; }
+
+  // ---------------------------------------------------------------- guide queries
+  // The free screen area between the top bar and the bottom bars (for camera framing): { left, top, right, bottom }.
+  // Guide elements can join in with data-safe-top / data-safe-bottom (e.g. a docked guide card).
+  // band: always the full-width band (otherwise a wide screen may get the roomier area beside the goal card).
+  safeRect({ band = false } = {}) {
+    // HUD pieces at the top / bottom of the screen, as rects (Mabel's docked card marks itself data-safe-*)
+    const rects = (els) => [...els].filter(isShown).map((el) => el.getBoundingClientRect()).filter((r) => r.width && r.height);
+    const tops = rects([this.levelBoxEl, this.questCard, this.pills, this.roundBtns, this.toolHint, ...document.querySelectorAll('[data-safe-top]')]);
+    // the toolbar counts even before it is revealed, so framing doesn't jump when it appears
+    const bots = [this.toolbar, this.seedBar, this.placeBar].filter((el) => el.isConnected && !el.classList.contains('hidden'))
+      .map((el) => el.getBoundingClientRect()).concat(rects(document.querySelectorAll('[data-safe-bottom]')));
+    // the clear area over the columns l..r: below what is up top there, above what is down below
+    const span = (l, r) => {
+      const on = (b) => b.right > l && b.left < r;
+      const top = Math.max(0, ...tops.filter(on).map((b) => b.bottom));
+      const bottom = Math.min(innerHeight, ...bots.filter(on).map((b) => b.top));
+      return { left: l, top: top + 8, right: r, bottom: Math.max(top + 16, bottom - 8) };
+    };
+    const full = span(12, innerWidth - 12);
+    if (band) return full;
+    // wide, short screens: the area beside the left column (level box + goal card) is often far roomier
+    const col = Math.max(0, ...tops.filter((b) => b.left < innerWidth * 0.25 && b.right < innerWidth / 2).map((b) => b.right));
+    if (!col || innerWidth - 12 - (col + 8) < innerWidth / 2) return full;
+    const side = span(col + 8, innerWidth - 12);
+    const area = (r) => (r.right - r.left) * (r.bottom - r.top);
+    return area(side) > area(full) * 1.15 ? side : full;
+  }
+
+  // { id, tab, ref, openedAt } of the open panel, or null
+  panelInfo() {
+    const p = this.panel;
+    return p ? { id: p.id ?? null, tab: p.tab ?? null, ref: p.ref ?? null, openedAt: p.openedAt } : null;
+  }
+
+  // true while level-ups are being merged into one modal (it shows a moment after the first 'levelup')
+  levelUpPending() { return !!this._luPending; }
+
+  // 'levelup' | 'daily' | 'chest' | 'guide' | null — the modal on top. A guide marks its own modal with data-modal="guide".
+  topModalKind() {
+    const m = this.topModal();
+    if (m) return m.dataset.modal || 'levelup';
+    return document.querySelector('[data-modal="guide"]:not(.hidden)') ? 'guide' : null;
   }
 
   toast(text, type = 'info') {
@@ -305,17 +656,22 @@ export class HUD {
   tick() {
     this.game.ensureOrders();
     this.refreshBadges();
+    this.updateQuestTimer();
     if (this.panel && this.panel.live && !this._pressing) this.refreshPanel(true);
   }
 
   // ---------------------------------------------------------------- panels
-  openPanel({ title, tabs, tab, render, live = false, cls = '' }) {
+  // id: what the panel is ('shop', 'barn', 'orders', 'visitor', 'factory', 'pen', 'crop', 'tree', 'decor',
+  // 'farmhouse', 'project', 'today'); ref: which one (object id, visitor id, project id, {x,z});
+  // tabKey: data-guide prefix of its tabs (defaults to id).
+  openPanel({ id = null, ref = null, tabKey, title, tabs, tab, render, live = false, cls = '' }) {
     this.closePanel(true);
+    this.closeSeedPopover();
     const body = h('div', { class: 'panel-body' });
     const tabBar = tabs ? h('div', { class: 'tabs' }) : null;
-    const panel = { title, tabs, tab: tab || (tabs && tabs[0].id), render, live, body, tabBar };
+    const panel = { id, ref, tabKey: tabKey || id, title, tabs, tab: tab || (tabs && tabs[0].id), render, live, body, tabBar, openedAt: performance.now() };
     const sheet = h('div', { class: 'sheet ' + cls },
-      h('div', { class: 'sheet-head' }, h('div', { class: 'sheet-title' }, title), h('button', { class: 'close', onclick: () => this.closePanel() }, '✕')),
+      h('div', { class: 'sheet-head' }, h('div', { class: 'sheet-title' }, title), h('button', { class: 'close', 'data-guide': 'panel:close', onclick: () => this.closePanel() }, '✕')),
       tabBar, body,
     );
     const backdrop = h('div', { class: 'backdrop', onclick: (e) => { if (e.target === backdrop) this.closePanel(); } }, sheet);
@@ -324,6 +680,7 @@ export class HUD {
     this.modalLayer.append(backdrop);
     requestAnimationFrame(() => backdrop.classList.add('open'));
     this.refreshPanel();
+    this.uiChanged('panel');
   }
 
   refreshPanel(fromTick = false) {
@@ -334,7 +691,11 @@ export class HUD {
       p.renderedTab = p.tab;
       p.tabBar.innerHTML = '';
       for (const t of p.tabs) {
-        p.tabBar.append(h('button', { class: 'tab' + (t.id === p.tab ? ' active' : ''), onclick: () => { this.audio.play('click'); p.tab = t.id; p.body.scrollTop = 0; this.refreshPanel(); } }, t.label));
+        p.tabBar.append(h('button', {
+          class: 'tab' + (t.id === p.tab ? ' active' : ''),
+          'data-guide': p.tabKey ? `${p.tabKey}:tab:${t.id}` : null,
+          onclick: () => { this.audio.play('click'); p.tab = t.id; p.body.scrollTop = 0; this.refreshPanel(); this.uiChanged('tab'); },
+        }, t.label));
       }
     }
     const scroll = p.body.scrollTop;
@@ -350,6 +711,13 @@ export class HUD {
     if (instant) { p.el.remove(); return; }
     p.el.classList.remove('open');
     setTimeout(() => p.el.remove(), 250);
+    this.uiChanged('panel');
+  }
+
+  // tab to open when the caller didn't ask for one: the guide's pick if it's a real tab, else the first
+  pickTab(panelId, tabs, fallback) {
+    const want = this.hook('preferredTab', panelId);
+    return tabs.some((t) => t.id === want) ? want : fallback;
   }
 
   gemButton(cost, label, fn, cls = 'small gem') {
@@ -359,30 +727,68 @@ export class HUD {
     } }, `${label} 💎${cost}`);
   }
 
+  // ---------------------------------------------------------------- missing inputs ("where do I get this?")
+  // Requirement chips: red ones are tappable and lead the guide to the missing item.
+  itemList(req) {
+    const g = this.game;
+    return Object.entries(req).map(([i, n]) => {
+      const have = g.count(i);
+      return have >= n
+        ? h('span', { class: 'r-in ok' }, `${ITEMS[i].icon}${have}/${n}`)
+        : h('span', { class: 'r-in miss', 'data-guide': 'missing:' + i, onclick: (e) => { e.stopPropagation(); this.missingTap(i); } }, `${ITEMS[i].icon}${have}/${n}`);
+    });
+  }
+
+  missingTap(item) {
+    this.audio.play('click');
+    if (!this.hasHook('onMissing')) { this.toast(this.missingHint(item), 'info'); return; }
+    this.closePanel();
+    this.hook('onMissing', item);
+  }
+
+  // where an item comes from, in one line (fallback when no guide is listening)
+  missingHint(item) {
+    const it = ITEMS[item];
+    const what = `${it.icon} ${it.name}`;
+    if (CROPS[item]) {
+      return this.game.isUnlocked('crops', item) ? `${what}: plant it on plowed soil 🌱` : `${what} seeds unlock at level ${CROPS[item].level}`;
+    }
+    const animal = Object.values(ANIMALS).find((a) => a.product === item);
+    if (animal) return `${what} comes from ${animal.icon} ${animal.plural || animal.name.toLowerCase() + 's'} — tap their home to collect`;
+    const r = RECIPES[item];
+    if (r) return `${what} is made in the ${OBJECTS[r.building].icon} ${OBJECTS[r.building].name}`;
+    const tree = Object.values(OBJECTS).find((d) => d.kind === 'tree' && d.fruit === item);
+    if (tree) return `${what} grows on ${tree.icon} ${tree.name}s`;
+    if (it.cat === 'material') return `${what}s drop while you farm, fill orders and serve visitors`;
+    return `Get more ${what}`;
+  }
+
   // ---------------------------------------------------------------- shop
-  openShop(tab = 'buildings') {
+  openShop(tab) {
+    const tabs = [{ id: 'buildings', label: '🏠 Buildings' }, { id: 'animals', label: '🐮 Animals' }, { id: 'trees', label: '🍎 Trees' }, { id: 'decor', label: '🌳 Decor' }, { id: 'land', label: '🗺️ Land' }];
     this.openPanel({
+      id: 'shop',
       title: '🏪 Shop',
-      tabs: [{ id: 'buildings', label: '🏠 Buildings' }, { id: 'animals', label: '🐮 Animals' }, { id: 'trees', label: '🍎 Trees' }, { id: 'decor', label: '🌳 Decor' }, { id: 'land', label: '🗺️ Land' }],
-      tab,
+      tabs,
+      tab: tab || this.pickTab('shop', tabs, 'buildings'),
       render: (t) => this.renderShop(t),
     });
   }
 
-  shopCard({ icon, name, cost, level, desc, sub, onBuy, disabled, items }) {
+  shopCard({ icon, name, cost, level, desc, sub, onBuy, disabled, items, guide }) {
     const g = this.game;
     const locked = level > g.s.level;
     const cant = !locked && cost > g.s.coins;
     const missing = items && !g.hasItems(items);
-    return h('div', { class: 'card' + (locked ? ' locked' : '') },
+    return h('div', { class: 'card' + (locked ? ' locked' : ''), 'data-guide': locked ? guide : null },
       h('div', { class: 'card-ico' }, locked ? '❔' : icon),
       h('div', { class: 'card-name' }, name),
       desc && !locked ? h('div', { class: 'card-desc' }, desc) : null,
       sub && !locked ? h('div', { class: 'card-sub' }, sub) : null,
-      items && !locked ? h('div', { class: 'r-inputs center' }, itemList(items, g)) : null,
+      items && !locked ? h('div', { class: 'r-inputs center' }, this.itemList(items)) : null,
       locked
         ? h('div', { class: 'card-lock' }, `🔒 Level ${level}`)
-        : h('button', { class: 'btn buy' + (cant || disabled || missing ? ' disabled' : ''), onclick: () => {
+        : h('button', { class: 'btn buy' + (cant || disabled || missing ? ' disabled' : ''), 'data-guide': guide, onclick: () => {
           if (disabled) { this.toast(disabled, 'bad'); return; }
           if (cant) { this.toast('Not enough coins!', 'bad'); return; }
           if (missing) { this.toast('Missing materials — they drop from harvests, animals, orders and visitors', 'bad'); return; }
@@ -412,7 +818,7 @@ export class HUD {
         const atLimit = owned >= limit;
         const nextLvl = atLimit && d.limit ? nextUnlockLevel((l) => d.limit(l), g.s.level, owned) : null;
         return this.shopCard({
-          icon: d.icon, name: d.name, cost: g.objectCost(id), level: d.level, desc: d.desc, items: d.items,
+          icon: d.icon, name: d.name, cost: g.objectCost(id), level: d.level, desc: d.desc, items: d.items, guide: 'shop:buy:' + id,
           sub: `Owned ${owned}${Number.isFinite(limit) ? `/${limit}` : ''}`,
           disabled: atLimit ? (nextLvl ? `Reach level ${nextLvl} to build another` : 'You have the maximum') : null,
           onBuy: () => { this.closePanel(); this.ctrl.startPlacement(id); },
@@ -430,18 +836,21 @@ export class HUD {
           desc: a.food ? `Eats ${a.foodQty} ${ITEMS[a.food].icon} → ${ITEMS[a.product].icon} every ${fmtTime(a.time)}` : `Makes ${ITEMS[a.product].icon} every ${fmtTime(a.time)} — no feed needed`,
           sub: homes.length ? `${count}/${cap} in ${OBJECTS[a.home].name}` : `Needs ${OBJECTS[a.home].name}`,
           disabled: noHome,
+          guide: 'shop:animal:' + id,
           onBuy: () => this.ctrl.buyAnimal(id),
         }));
       }
     } else if (tab === 'trees') {
       addCards((d) => d.kind === 'tree', (id, d) => this.shopCard({
-        icon: d.icon, name: d.name, cost: g.objectCost(id), level: d.level,
+        icon: d.icon, name: d.name, cost: g.objectCost(id), level: d.level, guide: 'shop:buy:' + id,
         desc: `${ITEMS[d.fruit].icon}×${d.yield} every ${fmtTime(d.fruitTime)} · ${d.harvests} harvests`,
         sub: `Grows in ${fmtTime(d.growTime)}`,
         onBuy: () => { this.closePanel(); this.ctrl.startPlacement(id); },
       }));
     } else if (tab === 'decor') {
-      addCards((d) => d.kind === 'decor', (id, d) => this.shopCard({ icon: d.icon, name: d.name, cost: d.cost, level: d.level, onBuy: () => { this.closePanel(); this.ctrl.startPlacement(id); } }));
+      addCards((d) => d.kind === 'decor', (id, d) => this.shopCard({ icon: d.icon, name: d.name, cost: d.cost, level: d.level, guide: 'shop:buy:' + id, onBuy: () => { this.closePanel(); this.ctrl.startPlacement(id); } }));
+      const gifts = this.renderGifts();
+      if (gifts) return h('div', {}, gifts, grid, hidden.n ? h('div', { class: 'tip' }, `✨ ${hidden.n} more to discover as you level up`) : null);
     } else if (tab === 'land') {
       const e = g.nextExpansion();
       const wrap = h('div', { class: 'land-tab' });
@@ -449,7 +858,7 @@ export class HUD {
       if (!e) wrap.append(h('p', {}, 'You own all the land! 🎉'));
       else {
         wrap.append(h('p', {}, `Clear the wild meadow and grow to ${e.size} × ${e.size} tiles.`));
-        wrap.append(this.shopCard({ icon: '🌲', name: 'Expand Land', cost: e.coins, level: e.level, items: e.items, onBuy: () => { this.closePanel(); this.ctrl.expandLand(); } }));
+        wrap.append(this.shopCard({ icon: '🌲', name: 'Expand Land', cost: e.coins, level: e.level, items: e.items, guide: 'shop:land:expand', onBuy: () => { this.closePanel(); this.ctrl.expandLand(); } }));
       }
       return wrap;
     }
@@ -458,13 +867,40 @@ export class HUD {
     return wrap;
   }
 
+  // "🎁 Your gifts": chapter-chest decor waiting to be put up (free, from s.gifts)
+  renderGifts() {
+    const counts = new Map();
+    for (const gf of this.game.s.gifts || []) {
+      const type = giftType(gf);
+      if (OBJECTS[type]) counts.set(type, (counts.get(type) || 0) + 1);
+    }
+    if (!counts.size) return null;
+    const row = h('div', { class: 'gift-cards' });
+    for (const [type, n] of counts) {
+      const d = OBJECTS[type];
+      row.append(h('button', { class: 'gift-card', 'data-guide': 'shop:gift:' + type, onclick: () => {
+        this.audio.play('click');
+        this.closePanel();
+        this.ctrl.startPlacement(type, { gift: true });
+      } },
+      n > 1 ? h('span', { class: 'gift-n' }, '×' + n) : null,
+      h('div', { class: 'card-ico' }, d.icon),
+      h('div', { class: 'card-name' }, d.name),
+      h('div', { class: 'btn small' }, 'Place · Free')));
+    }
+    return h('div', { class: 'gifts' }, h('div', { class: 'gifts-head' }, '🎁 Your gifts', h('span', { class: 'muted small' }, ' · free to place')), row);
+  }
+
   // ---------------------------------------------------------------- barn / storage
   openBarn(tab) {
     const ids = Object.keys(STORAGE);
+    const tabs = [...ids.map((id) => ({ id, label: `${STORAGE[id].icon} ${STORAGE[id].name}` })), { id: 'toolshed', label: '🧰 Toolshed' }];
     this.openPanel({
+      id: 'barn',
+      tabKey: 'storage',
       title: '📦 Storage',
-      tabs: [...ids.map((id) => ({ id, label: `${STORAGE[id].icon} ${STORAGE[id].name}` })), { id: 'toolshed', label: '🧰 Toolshed' }],
-      tab: tab || ids[0],
+      tabs,
+      tab: tab || this.pickTab('barn', tabs, ids[0]),
       render: (t) => (t === 'toolshed' ? this.renderToolshed() : this.renderBarn(t || ids[0])),
     });
   }
@@ -517,7 +953,7 @@ export class HUD {
       ));
     }
     if (used >= cap * 0.9) {
-      wrap.append(h('div', { class: 'panel-foot center' }, h('button', { class: 'btn small', onclick: () => {
+      wrap.append(h('div', { class: 'panel-foot center' }, h('button', { class: 'btn small', 'data-guide': 'storage:sellExtras:' + sid, onclick: () => {
         const earned = g.sellExtras(sid, 10);
         if (earned) { this.audio.play('coin'); this.toast(`Sold extras for 🪙${fmtNum(earned)}`, 'good'); }
         this.refreshPanel();
@@ -525,14 +961,14 @@ export class HUD {
     }
     const up = g.nextStorageUpgrade(sid);
     if (up && up.locked) {
-      wrap.append(h('div', { class: 'upgrade-card' }, h('div', { class: 'up-title' }, `⬆️ Next upgrade (${up.capacity} capacity) at level ${up.needLevel}`), h('div', { class: 'r-inputs' }, h('span', { class: 'r-in' }, `🪙${fmtNum(up.coins)}`), itemList(up.items, g))));
+      wrap.append(h('div', { class: 'upgrade-card' }, h('div', { class: 'up-title' }, `⬆️ Next upgrade (${up.capacity} capacity) at level ${up.needLevel}`), h('div', { class: 'r-inputs' }, h('span', { class: 'r-in' }, `🪙${fmtNum(up.coins)}`), this.itemList(up.items))));
     } else if (up) {
       const can = g.s.coins >= up.coins && g.hasItems(up.items);
       wrap.append(h('div', { class: 'upgrade-card' },
         h('div', { class: 'up-title' }, `⬆️ Upgrade to ${up.capacity} capacity`),
-        h('div', { class: 'r-inputs' }, h('span', { class: 'r-in ' + (g.s.coins >= up.coins ? 'ok' : 'miss') }, `🪙${fmtNum(up.coins)}`), itemList(up.items, g)),
+        h('div', { class: 'r-inputs' }, h('span', { class: 'r-in ' + (g.s.coins >= up.coins ? 'ok' : 'miss') }, `🪙${fmtNum(up.coins)}`), this.itemList(up.items)),
         h('div', { class: 'up-btns' },
-          h('button', { class: 'btn small' + (can ? '' : ' disabled'), onclick: () => this.ctrl.upgradeStorage(sid) }, 'Upgrade'),
+          h('button', { class: 'btn small' + (can ? '' : ' disabled'), 'data-guide': 'storage:upgrade:' + sid, onclick: () => this.ctrl.upgradeStorage(sid) }, 'Upgrade'),
           !g.hasItems(up.items) ? this.gemButton(g.gemPriceFor(up.items), 'Buy missing', () => { if (g.buyMissing(up.items)) { this.audio.play('coin'); this.refreshPanel(); } }) : null,
         ),
         h('div', { class: 'muted small' }, 'Materials drop randomly from harvests, animals, production, orders and visitors.'),
@@ -543,12 +979,14 @@ export class HUD {
   }
 
   // ---------------------------------------------------------------- orders
-  openOrders(tab = 'orders') {
+  openOrders(tab) {
     const wagon = this.game.s.level >= WAGON.level;
+    const tabs = wagon ? [{ id: 'orders', label: '🚚 Orders' }, { id: 'wagon', label: '🛒 Market Wagon' }] : null;
     this.openPanel({
+      id: 'orders',
       title: '🚚 Orders',
-      tabs: wagon ? [{ id: 'orders', label: '🚚 Orders' }, { id: 'wagon', label: '🛒 Market Wagon' }] : null,
-      tab: wagon ? tab : 'orders',
+      tabs,
+      tab: wagon ? tab || this.pickTab('orders', tabs, 'orders') : 'orders',
       live: true,
       render: (t) => (t === 'wagon' ? this.renderWagon() : this.renderOrders()),
     });
@@ -585,7 +1023,10 @@ export class HUD {
     const g = this.game;
     const grid = h('div', { class: 'orders' });
     const now = g.now();
-    for (const o of g.s.orders) {
+    // orders you can fill right now come first, then open ones, then the ones still on their way
+    const rank = (o) => (o.waitUntil ? 2 : g.hasItems(o.items) ? 0 : 1);
+    const list = g.s.orders.map((o, i) => [o, i]).sort((a, b) => rank(a[0]) - rank(b[0]) || a[1] - b[1]).map(([o]) => o);
+    for (const o of list) {
       if (o.waitUntil) {
         grid.append(h('div', { class: 'order waiting' }, h('div', { class: 'order-wait' }, '⏳'), h('div', { class: 'muted' }, `New order in ${fmtTime((o.waitUntil - now) / 1000)}`)));
         continue;
@@ -594,23 +1035,34 @@ export class HUD {
       const items = h('div', { class: 'order-items' });
       for (const [id, n] of Object.entries(o.items)) {
         const have = g.count(id);
-        items.append(h('div', { class: 'order-item ' + (have >= n ? 'ok' : 'miss') }, h('span', { class: 'oi-ico' }, ITEMS[id].icon), h('span', { class: 'oi-n' }, `${Math.min(have, n)}/${n}`)));
+        items.append(this.wantChip(id, n));
       }
       grid.append(h('div', { class: 'order' + (can ? ' ready' : '') },
         items,
         h('div', { class: 'order-reward' }, h('span', {}, `🪙 ${fmtNum(o.coins)}`), h('span', {}, `⭐ ${o.xp}`)),
         h('div', { class: 'order-btns' },
           h('button', { class: 'btn small ghost', title: 'Discard', onclick: () => { this.audio.play('click'); g.discardOrder(o.id); } }, '🗑️'),
-          h('button', { class: 'btn small' + (can ? '' : ' disabled'), onclick: () => this.ctrl.deliverOrder(o.id) }, 'Deliver'),
+          h('button', { class: 'btn small' + (can ? '' : ' disabled'), 'data-guide': 'order:deliver:' + o.id, onclick: () => this.ctrl.deliverOrder(o.id) }, 'Deliver'),
         ),
       ));
     }
     return grid;
   }
 
+  // one wanted item of an order / visitor: "🌾 4/8", red and tappable while you're short
+  wantChip(id, n) {
+    const have = this.game.count(id);
+    const ok = have >= n;
+    return h('div', {
+      class: 'order-item ' + (ok ? 'ok' : 'miss'),
+      'data-guide': ok ? null : 'missing:' + id,
+      onclick: ok ? null : (e) => { e.stopPropagation(); this.missingTap(id); },
+    }, h('span', { class: 'oi-ico' }, ITEMS[id].icon), h('span', { class: 'oi-n' }, `${Math.min(have, n)}/${n}`));
+  }
+
   // ---------------------------------------------------------------- visitors
   openVisitor(v) {
-    this.openPanel({ title: '👋 Visitor', cls: 'small', live: true, render: () => this.renderVisitor(v.id) });
+    this.openPanel({ id: 'visitor', ref: v.id, title: '👋 Visitor', cls: 'small', live: true, render: () => this.renderVisitor(v.id) });
   }
 
   renderVisitor(id) {
@@ -620,27 +1072,28 @@ export class HUD {
     const npc = VISITORS.npcs.find((n) => n.id === v.npc);
     const it = ITEMS[v.item];
     const have = g.count(v.item);
+    const line = this.hook('visitorLine', v) || (v.first && VISITORS.firstLine) || npc.line;
     return h('div', { class: 'visitor-panel' },
       h('div', { class: 'v-head' }, h('div', { class: 'v-face', style: `background:${npc.color}` }, npc.icon), h('div', {},
         h('div', { class: 'v-name' }, npc.name, h('span', { class: 'v-hearts' }, ` ❤️ ${g.s.hearts[npc.id] || 0}/${VISITORS.maxHearts}`)),
-        h('div', { class: 'v-line' }, `“${npc.line.replace('{item}', it.name.toLowerCase())}”`),
+        h('div', { class: 'v-line' }, `“${line.replace('{item}', it.name.toLowerCase())}”`),
         h('div', { class: 'muted small' }, `Likes ${npc.likes.map((c) => ({ crop: 'crops', animal: 'animal goods', goods: 'homemade goods', fruit: 'fruit' }[c] || c)).join(' & ')} (extra ❤️)`),
       )),
       h('div', { class: 'v-want' },
-        h('div', { class: 'order-item ' + (have >= v.qty ? 'ok' : 'miss') }, h('span', { class: 'oi-ico' }, it.icon), h('span', { class: 'oi-n' }, `${Math.min(have, v.qty)}/${v.qty}`)),
+        this.wantChip(v.item, v.qty),
         h('div', { class: 'order-reward' }, h('span', {}, `🪙 ${fmtNum(v.coins)}`), h('span', {}, `⭐ ${v.xp}`)),
       ),
       h('div', { class: 'muted small center' }, 'Happy to wait as long as you need 🙂'),
       h('div', { class: 'panel-foot center' },
         h('button', { class: 'btn ghost', onclick: () => { this.ctrl.dismissVisitor(v.id); this.closePanel(); } }, 'No thanks'),
-        h('button', { class: 'btn' + (have >= v.qty ? '' : ' disabled'), onclick: () => { if (this.ctrl.serveVisitor(v.id)) this.closePanel(); } }, `Sell ${it.icon}×${v.qty}`),
+        h('button', { class: 'btn' + (have >= v.qty ? '' : ' disabled'), 'data-guide': 'visitor:sell', onclick: () => { if (this.ctrl.serveVisitor(v.id)) this.closePanel(); } }, `Sell ${it.icon}×${v.qty}`),
       ),
     );
   }
 
   // ---------------------------------------------------------------- factory
   openFactory(o) {
-    this.openPanel({ title: `${OBJECTS[o.type].icon} ${OBJECTS[o.type].name}`, live: true, render: () => this.renderFactory(o) });
+    this.openPanel({ id: 'factory', ref: o.id, title: `${OBJECTS[o.type].icon} ${OBJECTS[o.type].name}`, live: true, render: () => this.renderFactory(o) });
   }
 
   renderFactory(o) {
@@ -677,10 +1130,19 @@ export class HUD {
     }
     wrap.append(slots);
     const btns = h('div', { class: 'panel-foot center' });
-    if (q.some((j) => j.done)) btns.append(h('button', { class: 'btn', onclick: () => { this.ctrl.collectFactory(o); } }, 'Collect ✨'));
+    if (q.some((j) => j.done)) btns.append(h('button', { class: 'btn', 'data-guide': 'factory:collect', onclick: () => { this.ctrl.collectFactory(o); } }, 'Collect ✨'));
     const active = q.find((j) => !j.done);
-    if (active) btns.append(this.gemButton(g.speedUpCost(active.endAt - now), 'Finish now', () => { if (g.speedUpFactory(o)) { this.audio.play('coin'); this.refreshPanel(); } }));
+    if (active) {
+      // the first bread of a new farm is on the house (a once-per-save rule in the model)
+      const free = !!g.freeFinishAvailable?.(o);
+      const finish = free
+        ? h('button', { class: 'btn small free pulse', onclick: () => { if (g.speedUpFactory(o, { free: true })) { this.audio.play('coin'); this.refreshPanel(); } } }, 'Finish now · Free!')
+        : this.gemButton(g.speedUpCost(active.endAt - now), 'Finish now', () => { if (g.speedUpFactory(o)) { this.audio.play('coin'); this.refreshPanel(); } });
+      finish.dataset.guide = 'factory:finish';
+      btns.append(finish);
+    }
     if (btns.children.length) wrap.append(btns);
+    const goal = this.hook('goalRecipe', o.type);
     const list = h('div', { class: 'recipes' });
     for (const [id, r] of Object.entries(RECIPES)) {
       if (r.building !== o.type) continue;
@@ -690,10 +1152,11 @@ export class HUD {
         continue;
       }
       const can = g.hasItems(r.inputs);
-      list.append(h('div', { class: 'recipe' },
+      list.append(h('div', { class: 'recipe' + (goal === id ? ' goal' : '') },
+        goal === id ? h('div', { class: 'r-goal' }, '★ Goal') : null,
         h('div', { class: 'r-ico' }, it.icon),
-        h('div', { class: 'r-mid' }, h('div', { class: 'r-name' }, it.name, h('span', { class: 'muted' }, ` · ${fmtTime(r.time)} · 🪙${it.price}`)), h('div', { class: 'r-inputs' }, itemList(r.inputs, g))),
-        h('button', { class: 'btn small' + (can && o.jobs.length < size ? '' : ' disabled'), onclick: () => this.ctrl.startRecipe(o, id) }, 'Make'),
+        h('div', { class: 'r-mid' }, h('div', { class: 'r-name' }, it.name, h('span', { class: 'muted' }, ` · ${fmtTime(r.time)} · 🪙${it.price}`)), h('div', { class: 'r-inputs' }, this.itemList(r.inputs))),
+        h('button', { class: 'btn small' + (can && o.jobs.length < size ? '' : ' disabled'), 'data-guide': 'factory:make:' + id, onclick: () => this.ctrl.startRecipe(o, id) }, 'Make'),
       ));
     }
     wrap.append(list);
@@ -703,7 +1166,7 @@ export class HUD {
 
   // ---------------------------------------------------------------- pen
   openPen(o) {
-    this.openPanel({ title: `${OBJECTS[o.type].icon} ${OBJECTS[o.type].name}`, live: true, render: () => this.renderPen(o) });
+    this.openPanel({ id: 'pen', ref: o.id, title: `${OBJECTS[o.type].icon} ${OBJECTS[o.type].name}`, live: true, render: () => this.renderPen(o) });
   }
 
   renderPen(o) {
@@ -738,8 +1201,15 @@ export class HUD {
     for (let i = list.length; i < cap; i++) grid.append(h('div', { class: 'animal-card empty' }, h('div', { class: 'a-ico' }, '·')));
     wrap.append(grid);
     const btns = h('div', { class: 'panel-foot' });
-    if (list.some((x) => g.animalState(x, now) !== 'producing')) btns.append(h('button', { class: 'btn', onclick: () => { this.closePanel(); this.ctrl.tendPen(o, true); } }, a.food ? 'Feed & collect' : 'Collect'));
-    if (list.length < cap) btns.append(h('button', { class: 'btn' + (!g.isUnlocked('animals', def.animal) || g.s.coins < g.animalCost(def.animal) ? ' disabled' : ''), onclick: () => this.ctrl.buyAnimal(def.animal) }, `Buy ${a.icon} 🪙${fmtNum(g.animalCost(def.animal))}`));
+    if (list.some((x) => g.animalState(x, now) !== 'producing')) btns.append(h('button', { class: 'btn', 'data-guide': 'pen:tend', onclick: () => { this.closePanel(); this.ctrl.tendPen(o, true); } }, a.food ? 'Feed & collect' : 'Collect'));
+    if (list.length < cap) {
+      const poor = !g.isUnlocked('animals', def.animal) || g.s.coins < g.animalCost(def.animal);
+      btns.append(h('button', {
+        class: 'btn' + (poor ? ' disabled' : this.hook('isGoal', 'pen:buy') ? ' pulse' : ''),
+        'data-guide': 'pen:buy',
+        onclick: () => this.ctrl.buyAnimal(def.animal),
+      }, `Buy ${a.icon} 🪙${fmtNum(g.animalCost(def.animal))}`));
+    }
     btns.append(h('button', { class: 'btn small ghost', onclick: () => { this.closePanel(); this.ctrl.startPlacement(o.type, o.id); } }, '✥ Move'));
     wrap.append(btns);
     return wrap;
@@ -747,7 +1217,7 @@ export class HUD {
 
   // ---------------------------------------------------------------- crops & trees info
   openCropInfo(x, z) {
-    this.openPanel({ title: '🌱 Field', cls: 'small', live: true, render: () => {
+    this.openPanel({ id: 'crop', ref: { x, z }, title: '🌱 Field', cls: 'small', live: true, render: () => {
       const g = this.game;
       const soil = g.soilAt(x, z);
       if (!soil || !soil.crop) { setTimeout(() => this.closePanel(), 0); return h('div', {}); }
@@ -766,7 +1236,7 @@ export class HUD {
   }
 
   openTree(o) {
-    this.openPanel({ title: `${OBJECTS[o.type].icon} ${OBJECTS[o.type].name}`, cls: 'small', live: true, render: () => {
+    this.openPanel({ id: 'tree', ref: o.id, title: `${OBJECTS[o.type].icon} ${OBJECTS[o.type].name}`, cls: 'small', live: true, render: () => {
       const g = this.game;
       const d = OBJECTS[o.type];
       if (!g.objById.get(o.id)) { setTimeout(() => this.closePanel(), 0); return h('div', {}); }
@@ -790,6 +1260,7 @@ export class HUD {
   openDecor(o) {
     const d = OBJECTS[o.type];
     this.openPanel({
+      id: 'decor', ref: o.id,
       title: `${d.icon} ${d.name}`, cls: 'small',
       render: () => h('div', { class: 'panel-foot center' },
         h('button', { class: 'btn', onclick: () => { this.closePanel(); this.ctrl.startPlacement(o.type, o.id); } }, '✥ Move'),
@@ -799,11 +1270,13 @@ export class HUD {
   }
 
   // ---------------------------------------------------------------- farmhouse: progress / achievements / settings
-  openFarmhouse(tab = 'progress') {
+  openFarmhouse(tab) {
+    const tabs = [{ id: 'progress', label: '⭐ Progress' }, { id: 'village', label: '🏘️ Village' }, { id: 'achievements', label: '🏆 Achievements' }, { id: 'farm', label: '⚙️ Settings' }];
     this.openPanel({
+      id: 'farmhouse',
       title: '🏡 Your Farm',
-      tabs: [{ id: 'progress', label: '⭐ Progress' }, { id: 'village', label: '🏘️ Village' }, { id: 'achievements', label: '🏆 Achievements' }, { id: 'farm', label: '⚙️ Settings' }],
-      tab,
+      tabs,
+      tab: tab || this.pickTab('farmhouse', tabs, 'progress'),
       live: true,
       render: (t) => (t === 'achievements' ? this.renderAchievements() : t === 'farm' ? this.renderSettings() : t === 'village' ? this.renderVillage() : this.renderProgress()),
     });
@@ -868,7 +1341,7 @@ export class HUD {
 
   // ---------------------------------------------------------------- village project
   openProject(id) {
-    this.openPanel({ title: `${PROJECTS[id].icon} ${PROJECTS[id].name}`, live: true, render: () => this.renderProject(id) });
+    this.openPanel({ id: 'project', ref: id, title: `${PROJECTS[id].icon} ${PROJECTS[id].name}`, live: true, render: () => this.renderProject(id) });
   }
 
   renderProject(id) {
@@ -924,10 +1397,21 @@ export class HUD {
     const g = this.game;
     const s = g.s;
     const toggle = (label, on, fn) => h('button', { class: 'toggle' + (on ? ' on' : ''), onclick: fn }, label, h('span', { class: 'knob' }));
+    const set = (key, value) => { s.settings[key] = value; g.saveSoon(); this.audio.play('click'); this.hook('onSettings', key, value); this.refreshPanel(); };
+    const hints = s.settings.hints ?? 'full';
+    const tapHarvest = s.settings.tapHarvest !== false;
+    const guided = s.tutorial?.mode === 'guided' && this.hasHook('onSkipTour');
     return h('div', { class: 'farm-panel' },
       h('div', { class: 'settings' },
         toggle('🔊 Sound effects', s.settings.sound, () => { s.settings.sound = !s.settings.sound; this.audio.setSfx(s.settings.sound); g.saveSoon(); this.refreshPanel(); }),
         toggle('🎵 Music', s.settings.music, () => { s.settings.music = !s.settings.music; this.audio.setMusic(s.settings.music); g.saveSoon(); this.refreshPanel(); }),
+        h('div', { class: 'toggle seg-row' },
+          h('div', {}, '👆 Hints', h('div', { class: 'muted small' }, 'Tap your goal card any time for help')),
+          h('div', { class: 'seg' }, [['full', 'Full'], ['glow', 'Glow only'], ['off', 'Off']].map(([v, label]) =>
+            h('button', { class: 'seg-btn' + (hints === v ? ' on' : ''), onclick: () => set('hints', v) }, label))),
+        ),
+        toggle('🌾 Tap harvests whole field', tapHarvest, () => set('tapHarvest', !tapHarvest)),
+        guided ? h('button', { class: 'btn small ghost skip-tour', onclick: () => { this.closePanel(); this.hook('onSkipTour'); } }, 'Skip tour ›') : null,
       ),
       h('div', { class: 'help' },
         h('b', {}, 'How to play'),
@@ -944,19 +1428,44 @@ export class HUD {
     );
   }
 
-  topModal() { return this.modalLayer.querySelector('.levelup-back.open'); }
+  // the open modal on top (level-up, daily gift or chapter chest), or null. A modal counts from the moment
+  // it is added (its .open class only lands on the next frame) until it starts closing.
+  topModal() {
+    const open = [...this.modalLayer.querySelectorAll('.levelup-back')].filter((b) => !b._closed && (b._close || b.classList.contains('open')));
+    return open.length ? open[open.length - 1] : null;
+  }
 
+  // Esc / Enter: a modal closes the way its main button would
   closeTopModal() {
     const m = this.topModal();
     if (!m) return;
+    if (m._close) { m._close(); return; }
     m.classList.remove('open');
     if (m === this._luBack) this._luBack = null;
     setTimeout(() => m.remove(), 250);
   }
 
+  // shared shell of the centred modals; kind: 'levelup' | 'daily' | 'chest'
+  showModal(kind, modal, close) {
+    this.closeSeedPopover();
+    const back = h('div', { class: 'backdrop levelup-back', 'data-modal': kind }, modal);
+    back._close = () => {
+      if (back._closed) return;
+      back._closed = true;
+      back.classList.remove('open');
+      setTimeout(() => back.remove(), 250);
+      close?.();
+      this.uiChanged('modal');
+    };
+    this.modalLayer.append(back);
+    requestAnimationFrame(() => back.classList.add('open'));
+    this.uiChanged('modal');
+    return back;
+  }
+
   // ---------------------------------------------------------------- today: daily gift + chores
   openToday() {
-    this.openPanel({ title: '🎁 Today', live: true, render: () => this.renderToday() });
+    this.openPanel({ id: 'today', title: '🎁 Today', live: true, render: () => this.renderToday() });
   }
 
   renderToday() {
@@ -970,7 +1479,7 @@ export class HUD {
       days.append(h('div', { class: 'daily-day ' + cls }, h('small', {}, `Day ${day}`), h('div', { class: 'dd-ico' }, r.gems ? '💎' : r.items ? ITEMS[Object.keys(r.items)[0]].icon : '🪙'), h('small', {}, r.gems ? `×${r.gems}` : r.items ? `×${Object.values(r.items)[0]}` : `${r.coins}`)));
     });
     wrap.append(h('div', { class: 'upcoming' }, h('b', {}, 'Daily gift'), days,
-      st.canClaim ? h('button', { class: 'btn', onclick: () => this.ctrl.claimDaily() }, `Claim day ${st.day}!`)
+      st.canClaim ? h('button', { class: 'btn', 'data-guide': 'today:gift', onclick: () => this.ctrl.claimDaily() }, `Claim day ${st.day}!`)
         : h('div', { class: 'muted small' }, g.s.daily.lastAt && g.now() - g.s.daily.lastAt < 16 * 3600000 && new Date(g.s.daily.lastAt).toDateString() !== new Date(g.now()).toDateString()
           ? `Next gift in ${fmtTime((g.s.daily.lastAt + 16 * 3600000 - g.now()) / 1000)}. Missed days never reset it.`
           : 'Claimed today — a new gift tomorrow. Missed days never reset it.')));
@@ -980,9 +1489,11 @@ export class HUD {
     else if (ch) {
       ch.list.forEach((c, i) => {
         const done = c.progress >= c.count;
-        box.append(h('div', { class: 'chore' + (c.claimed ? ' claimed' : done ? ' ready' : '') },
+        const ready = done && !c.claimed;
+        // the key sits on the Claim button while there is one, else on the row
+        box.append(h('div', { class: 'chore' + (c.claimed ? ' claimed' : done ? ' ready' : ''), 'data-guide': ready ? null : `today:chore:${i}` },
           h('div', { class: 'r-mid' }, h('div', { class: 'r-name' }, c.text), h('div', { class: 'slot-bar wide' }, h('div', { style: `width:${(c.progress / c.count) * 100}%` })), h('div', { class: 'muted small' }, `${c.progress}/${c.count} · 🪙${c.coins} ⭐${c.xp}`)),
-          c.claimed ? h('span', { class: 'muted' }, '✓') : done ? h('button', { class: 'btn small', onclick: () => this.ctrl.claimChore(i) }, 'Claim')
+          c.claimed ? h('span', { class: 'muted' }, '✓') : done ? h('button', { class: 'btn small', 'data-guide': `today:chore:${i}`, onclick: () => this.ctrl.claimChore(i) }, 'Claim')
             : ch.rerolls > 0 ? h('button', { class: 'btn small ghost', title: 'Swap for another chore (1 per day)', onclick: () => { if (g.rerollChore(i)) this.audio.play('click'); } }, '🔄') : null));
       });
       box.append(h('div', { class: 'muted small' }, ch.bonus ? 'All done today! 🎉' : `Finish all ${ch.list.length} for 💎${CHORES.allDone.gems} and a building material.`));
@@ -992,7 +1503,8 @@ export class HUD {
   }
 
   // ---------------------------------------------------------------- daily gift (auto popup)
-  showDaily(auto = false) {
+  // opts.onClose(): after the modal closed (claimed or dismissed)
+  showDaily(auto = false, opts = {}) {
     const g = this.game;
     const st = g.dailyStatus();
     if (auto && !st.canClaim) return;
@@ -1010,14 +1522,14 @@ export class HUD {
       h('div', { class: 'lu-title' }, '🎁 Daily Gift'),
       h('div', { class: 'muted' }, st.canClaim ? `Day ${st.day} gift — a new one every day you visit. Missed days never reset your progress!` : `Come back tomorrow for day ${(st.day % DAILY.length) + 1}!`),
       days,
-      h('button', { class: 'btn wide' + (st.canClaim ? '' : ' disabled'), onclick: () => {
+      h('button', { class: 'btn wide' + (st.canClaim ? '' : ' disabled'), 'data-guide': 'modal:daily:claim', onclick: () => {
         if (st.canClaim) this.ctrl.claimDaily();
-        back.classList.remove('open'); setTimeout(() => back.remove(), 250);
+        back._close();
       } }, st.canClaim ? 'Claim!' : 'OK'),
     );
-    const back = h('div', { class: 'backdrop levelup-back', onclick: (e) => { if (e.target === back) { back.classList.remove('open'); setTimeout(() => back.remove(), 250); } } }, modal);
-    this.modalLayer.append(back);
-    requestAnimationFrame(() => back.classList.add('open'));
+    const back = this.showModal('daily', modal, opts.onClose);
+    back.addEventListener('click', (e) => { if (e.target === back) back._close(); });
+    return back;
   }
 
   // ---------------------------------------------------------------- level up
@@ -1045,6 +1557,8 @@ export class HUD {
     const g = this.game;
     const extra = [];
     if (g.plotCap() > PLOTS.cap(from - 1)) extra.push(`🚜 Field limit is now ${g.plotCap()}`);
+    // "Let's go! ▸" when the guide has a goal waiting at this level; closing then hands over to it
+    const go = !!this.hook('levelUpGo', level);
     const modal = h('div', { class: 'levelup' },
       h('div', { class: 'lu-burst' }),
       h('div', { class: 'lu-star' }, h('span', {}, level)),
@@ -1053,13 +1567,49 @@ export class HUD {
       unlocks.length ? h('div', { class: 'lu-unlocks' }, h('div', { class: 'muted' }, 'New unlocks'), h('div', { class: 'lu-list' }, unlocks.map((u) => h('div', { class: 'lu-item' }, h('span', {}, u.icon), h('small', {}, u.name))))) : null,
       extra.length ? h('div', { class: 'muted small' }, extra.join(' · ')) : null,
       this.nextUnlockLine(level),
-      h('button', { class: 'btn wide', onclick: () => { this.audio.play('click'); back.classList.remove('open'); this._luBack = null; setTimeout(() => back.remove(), 250); } }, 'Awesome!'),
+      h('button', { class: 'btn wide' + (go ? ' go' : ''), 'data-guide': 'modal:levelup:ok', onclick: () => back._close() }, go ? "Let's go! ▸" : 'Awesome!'),
     );
-    const back = h('div', { class: 'backdrop levelup-back' }, modal);
+    const back = this.showModal('levelup', modal, () => {
+      this.audio.play('click');
+      if (this._luBack === back) this._luBack = null;
+      if (go) this.hook('onLevelUpGo', level);
+    });
     this._luBack = back;
-    this.modalLayer.append(back);
-    requestAnimationFrame(() => back.classList.add('open'));
     this.confetti();
+  }
+
+  // ---------------------------------------------------------------- chapter chest
+  // chapter: a CHAPTERS entry {id, name, icon, reward:{gems, gift}} (or its id); next: the following
+  // chapter (looked up when omitted, null for none). Rewards were already paid by the model — this is
+  // the celebration. onOpen() runs once the chest is opened (button, Esc or Enter).
+  showChest({ chapter, next, onOpen } = {}) {
+    const chapters = CONFIG.CHAPTERS || [];
+    const ch = typeof chapter === 'object' && chapter ? chapter : chapters.find((c) => c.id === chapter);
+    if (!ch) { onOpen?.(); return null; }
+    const nx = next === undefined ? chapters.find((c) => c.id === ch.id + 1) : next;
+    const reward = ch.reward || {};
+    const gift = reward.gift && OBJECTS[reward.gift];
+    this.audio.play('levelup');
+    const gemsItem = reward.gems ? h('div', { class: 'lu-item' }, h('span', {}, '💎'), h('small', {}, `${reward.gems} gems`)) : null;
+    const modal = h('div', { class: 'levelup chest' },
+      h('div', { class: 'lu-burst' }),
+      h('div', { class: 'chest-ico' }, '🎁'),
+      h('div', { class: 'chest-kicker' }, `Chapter ${ch.id} complete!`),
+      h('div', { class: 'lu-title chest-title' }, `${ch.icon ? ch.icon + ' ' : ''}${ch.name}`),
+      gemsItem || gift ? h('div', { class: 'lu-list chest-rewards' }, gemsItem, gift ? h('div', { class: 'lu-item gift' }, h('span', {}, gift.icon), h('small', {}, `${gift.name} · gift`)) : null) : null,
+      nx ? h('div', { class: 'muted small next-unlock' }, `Next: Chapter ${nx.id} · ${nx.name} ${nx.icon || ''}`) : null,
+      h('button', { class: 'btn wide', 'data-guide': 'modal:chest:open', onclick: () => back._close() }, 'Open! ✨'),
+    );
+    const back = this.showModal('chest', modal, () => {
+      this.audio.play('coin');
+      this.confetti();
+      if (gemsItem && this.ctrl.effects) {
+        const r = gemsItem.getBoundingClientRect();
+        for (let i = 0; i < Math.min(3, reward.gems); i++) this.ctrl.effects.flyFrom(r.left + r.width / 2, r.top + r.height / 2, '💎', this.gemsPill, { delay: i * 90 });
+      }
+      onOpen?.();
+    });
+    return back;
   }
 
   nextUnlockLine(level) {

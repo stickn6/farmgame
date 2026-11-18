@@ -7,6 +7,18 @@ const HALF = MAP_SIZE / 2;
 export const tileToWorld = (x, z, out = new THREE.Vector3()) => out.set(x - HALF + 0.5, 0, z - HALF + 0.5);
 export const worldToTile = (p) => ({ x: Math.floor(p.x + HALF), z: Math.floor(p.z + HALF) });
 
+// Orbit placement shared by the rig and World.frame's scratch camera
+function placeCamera(camera, target, yaw, pitch, dist) {
+  const cp = Math.cos(pitch);
+  camera.position.set(
+    target.x + Math.sin(yaw) * cp * dist,
+    target.y + Math.sin(pitch) * dist,
+    target.z + Math.cos(yaw) * cp * dist,
+  );
+  camera.lookAt(target);
+}
+const smooth = (t) => t * t * (3 - 2 * t);
+
 // ------------------------------------------------------------------ camera rig
 export class CameraRig {
   constructor(camera) {
@@ -19,6 +31,8 @@ export class CameraRig {
     this.velocity = new THREE.Vector3();
     this.minDist = 7;
     this.maxDist = 42;
+    this.locked = false; // set by Input.cameraLocked: player zoom/rotate become no-ops
+    this.glideAnim = null; // timed eased move (World.frame with duration)
     this.apply();
   }
 
@@ -28,15 +42,36 @@ export class CameraRig {
     this.target.z = THREE.MathUtils.clamp(this.target.z, -lim, lim);
   }
 
-  zoomBy(factor) { this.goal.dist = THREE.MathUtils.clamp(this.goal.dist * factor, this.minDist, this.maxDist); }
+  zoomBy(factor) {
+    if (this.locked) return;
+    this.glideAnim = null;
+    this.goal.dist = THREE.MathUtils.clamp(this.goal.dist * factor, this.minDist, this.maxDist);
+  }
   setDist(d) { this.goal.dist = this.dist = THREE.MathUtils.clamp(d, this.minDist, this.maxDist); this.apply(); }
-  rotateBy(a) { this.goal.yaw += a; }
-  focus(p) { this.goal.target = p.clone(); }
+  rotateBy(a) { if (!this.locked) this.goal.yaw += a; }
+  focus(p) { this.glideAnim = null; this.goal.target = p.clone(); }
+  // stop any automatic camera motion (the player grabbed the camera)
+  stopGlide() { this.glideAnim = null; this.goal.target = null; }
+
+  // Eased move of target + distance over `duration` seconds (instead of the exponential lerp)
+  glide(target, dist, duration) {
+    this.glideAnim = { from: this.target.clone(), to: target.clone(), d0: this.dist, d1: dist, t: 0, dur: Math.max(0.05, duration) };
+    this.goal.target = null;
+    this.goal.dist = dist;
+    this.velocity.set(0, 0, 0);
+  }
 
   update(dt) {
     const k = 1 - Math.pow(0.0005, dt);
     this.yaw += (this.goal.yaw - this.yaw) * k;
-    this.dist += (this.goal.dist - this.dist) * k;
+    const gl = this.glideAnim;
+    if (gl) {
+      gl.t = Math.min(1, gl.t + dt / gl.dur);
+      const e = smooth(gl.t);
+      this.target.lerpVectors(gl.from, gl.to, e);
+      this.dist = this.goal.dist = gl.d0 + (gl.d1 - gl.d0) * e;
+      if (gl.t >= 1) this.glideAnim = null;
+    } else this.dist += (this.goal.dist - this.dist) * k;
     if (this.goal.target) {
       this.target.lerp(this.goal.target, k * 0.8);
       if (this.target.distanceTo(this.goal.target) < 0.02) this.goal.target = null;
@@ -50,13 +85,7 @@ export class CameraRig {
 
   apply() {
     this.clampTarget();
-    const cp = Math.cos(this.pitch);
-    this.camera.position.set(
-      this.target.x + Math.sin(this.yaw) * cp * this.dist,
-      this.target.y + Math.sin(this.pitch) * this.dist,
-      this.target.z + Math.cos(this.yaw) * cp * this.dist,
-    );
-    this.camera.lookAt(this.target);
+    placeCamera(this.camera, this.target, this.yaw, this.pitch, this.dist);
   }
 }
 
@@ -85,6 +114,11 @@ export class World {
     this.raycaster = new THREE.Raycaster();
     this.groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
     this.time = 0;
+    this.scratchCam = new THREE.PerspectiveCamera();
+    // OS "reduce motion": camera moves snap instead of gliding
+    const mq = window.matchMedia?.('(prefers-reduced-motion: reduce)');
+    this.prefersReducedMotion = !!mq?.matches;
+    mq?.addEventListener?.('change', (e) => { this.prefersReducedMotion = e.matches; });
     this.resize();
     window.addEventListener('resize', () => this.resize());
   }
@@ -366,6 +400,121 @@ export class World {
   project(v, out = new THREE.Vector3()) {
     out.copy(v).project(this.camera);
     return { x: (out.x * 0.5 + 0.5) * window.innerWidth, y: (-out.y * 0.5 + 0.5) * window.innerHeight, visible: out.z < 1 };
+  }
+
+  // ---------------------------------------------------------------- framing helpers (guide / placement)
+  // The 4 corners of tile (x, z) at height y (0.3 ≈ crop height)
+  tileCorners(x, z, y = 0.3) {
+    const c = tileToWorld(x, z);
+    return [[-0.5, -0.5], [0.5, -0.5], [0.5, 0.5], [-0.5, 0.5]].map(([dx, dz]) => new THREE.Vector3(c.x + dx, y, c.z + dz));
+  }
+
+  // Corners of every tile in [[x, z], …]
+  tilesCorners(tiles, y = 0.3) { return tiles.flatMap(([x, z]) => this.tileCorners(x, z, y)); }
+
+  // Screen-space bounding rect (CSS px) of world points.
+  // visible: every point is in front of the camera; onScreen: visible and the rect overlaps the viewport.
+  projectRect(points, camera = this.camera) {
+    const W = window.innerWidth, H = window.innerHeight;
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, visible = points.length > 0;
+    const v = new THREE.Vector3();
+    for (const p of points) {
+      v.copy(p).project(camera);
+      if (v.z >= 1 || v.z <= -1) visible = false;
+      const sx = (v.x * 0.5 + 0.5) * W, sy = (-v.y * 0.5 + 0.5) * H;
+      x0 = Math.min(x0, sx); y0 = Math.min(y0, sy); x1 = Math.max(x1, sx); y1 = Math.max(y1, sy);
+    }
+    if (!points.length) x0 = y0 = x1 = y1 = 0;
+    const onScreen = visible && x1 > 0 && y1 > 0 && x0 < W && y0 < H;
+    return { x: x0, y: y0, w: x1 - x0, h: y1 - y0, visible, onScreen };
+  }
+
+  // Screen point (CSS px) for pointing at p from the screen edge (guide edge arrows): unlike project(),
+  // a point behind the camera keeps its true side instead of mirroring, and is pushed far off-screen.
+  projectArrow(p) {
+    const W = window.innerWidth, H = window.innerHeight;
+    const c = new THREE.Vector4(p.x, p.y, p.z, 1).applyMatrix4(this.camera.matrixWorldInverse).applyMatrix4(this.camera.projectionMatrix);
+    const behind = c.w <= 1e-6;
+    const k = behind ? 1e4 : 1 / c.w;
+    const x = (c.x * k * 0.5 + 0.5) * W, y = (-c.y * k * 0.5 + 0.5) * H;
+    return { x, y, behind, onScreen: !behind && x >= 0 && x <= W && y >= 0 && y <= H };
+  }
+
+  // Default safe rect: the viewport with a 12 px margin
+  viewRect(m = 12) { return { left: m, top: m, right: window.innerWidth - m, bottom: window.innerHeight - m }; }
+
+  // True when every point projects inside `safe` shrunk to `inner` of its size about its centre
+  // (e.g. inner 0.85 = "inside the inner 85%": anything outside should be framed).
+  inSafe(points, safe = this.viewRect(), inner = 1, camera = this.camera) {
+    const r = this.projectRect(points, camera);
+    if (!r.visible) return false;
+    const mx = ((1 - inner) / 2) * (safe.right - safe.left), my = ((1 - inner) / 2) * (safe.bottom - safe.top);
+    return r.x >= safe.left + mx && r.x + r.w <= safe.right - mx && r.y >= safe.top + my && r.y + r.h <= safe.bottom - my;
+  }
+
+  // Move the camera so all `points` fit inside `safe` (CSS px rect) at the closest distance in
+  // [minDist, maxDist], with their centroid at screen height screenY·innerHeight (clamped into safe).
+  // Keeps the current yaw/pitch. Glides via the rig's lerp, or over `duration` s with an eased tween;
+  // `instant` (or OS reduced motion) snaps. Returns { target, dist, fits }.
+  frame(points, { safe = this.viewRect(), screenY = 0.42, minDist = 10, maxDist = 30, instant = false, duration = 0 } = {}) {
+    const rig = this.rig;
+    if (!points || !points.length) return null;
+    const W = window.innerWidth, H = window.innerHeight;
+    const C = new THREE.Vector3();
+    for (const p of points) C.add(p);
+    C.divideScalar(points.length);
+    const cx = (safe.left + safe.right) / 2;
+    const cy = THREE.MathUtils.clamp(screenY * H, safe.top, safe.bottom);
+    const cam = this.scratchCam;
+    cam.copy(this.camera, false);
+    const yaw = rig.goal.yaw, pitch = rig.pitch;
+    const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -C.y);
+    const ndc = new THREE.Vector2((cx / W) * 2 - 1, -(cy / H) * 2 + 1);
+    const ray = new THREE.Raycaster();
+    const G1 = new THREE.Vector3();
+    const lim = HALF + 2;
+    // target for distance d: aim at C on the ground, then shift so C lands on (cx, cy): T = 2C − G1
+    const solve = (d) => {
+      const T = new THREE.Vector3(C.x, 0, C.z);
+      placeCamera(cam, T, yaw, pitch, d);
+      cam.updateMatrixWorld();
+      ray.setFromCamera(ndc, cam);
+      if (ray.ray.intersectPlane(plane, G1)) T.set(2 * C.x - G1.x, 0, 2 * C.z - G1.z);
+      T.x = THREE.MathUtils.clamp(T.x, -lim, lim);
+      T.z = THREE.MathUtils.clamp(T.z, -lim, lim);
+      placeCamera(cam, T, yaw, pitch, d);
+      cam.updateMatrixWorld();
+      return T;
+    };
+    const fits = (d) => { solve(d); return this.inSafe(points, safe, 1, cam); };
+    const lo0 = Math.max(rig.minDist, Math.min(minDist, maxDist)), hi0 = Math.min(rig.maxDist, Math.max(minDist, maxDist));
+    let d = hi0, ok = true;
+    if (fits(lo0)) d = lo0;
+    else if (!fits(hi0)) ok = false;
+    else {
+      let lo = lo0, hi = hi0;
+      for (let i = 0; i < 10; i++) {
+        const mid = (lo + hi) / 2;
+        if (fits(mid)) hi = mid; else lo = mid;
+      }
+      d = hi;
+    }
+    const T = solve(d);
+    if (instant || this.prefersReducedMotion) {
+      rig.glideAnim = null;
+      rig.goal.target = null;
+      rig.velocity.set(0, 0, 0);
+      rig.yaw = rig.goal.yaw;
+      rig.target.copy(T);
+      rig.setDist(d);
+    } else if (duration > 0) rig.glide(T, d, duration);
+    else {
+      rig.glideAnim = null;
+      rig.velocity.set(0, 0, 0);
+      rig.goal.target = T.clone();
+      rig.goal.dist = d;
+    }
+    return { target: T, dist: d, fits: ok };
   }
 
   render() { this.renderer.render(this.scene, this.camera); }

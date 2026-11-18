@@ -7,7 +7,7 @@
     "dev": "vite --host",
     "build": "vite build",
     "preview": "vite preview --host",
-    "test": "node tools/test.mjs",
+    "test": "node tools/test.mjs && node tools/test-guide.mjs",
     "sim": "node tools/sim.mjs --activeHours 8 --casualHours 1",
     "sim:check": "node tools/sim.mjs --activeHours 8 --casualHours 1 --check 1"
   },

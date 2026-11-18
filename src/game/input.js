@@ -2,6 +2,7 @@
 //  - one finger / left mouse: either "paint" (tools, swipe-harvest) or "pan" (decided by controller)
 //  - two fingers: pinch zoom + pan; mouse wheel: zoom; right/middle drag: pan
 //  - keyboard: WASD/arrows pan, Q/E rotate, +/- zoom
+//  - cameraLocked (guide hard beats): pan / pinch / wheel / key moves do nothing; taps and paint still work
 import * as THREE from 'three';
 
 const TAP_SLOP = 9;
@@ -18,12 +19,13 @@ export class Input {
     this.grab = new THREE.Vector3();
     this.tmp = new THREE.Vector3();
     this.lastMoveT = 0;
+    this._locked = false;
 
     canvas.addEventListener('pointerdown', (e) => this.down(e));
     window.addEventListener('pointermove', (e) => this.move(e));
     window.addEventListener('pointerup', (e) => this.up(e));
     window.addEventListener('pointercancel', (e) => this.up(e, true));
-    canvas.addEventListener('wheel', (e) => { e.preventDefault(); this.rig.zoomBy(Math.pow(1.0015, e.deltaY)); }, { passive: false });
+    canvas.addEventListener('wheel', (e) => { e.preventDefault(); if (!this._locked) this.rig.zoomBy(Math.pow(1.0015, e.deltaY)); }, { passive: false });
     canvas.addEventListener('contextmenu', (e) => e.preventDefault());
     window.addEventListener('keydown', (e) => {
       if (e.target.tagName === 'INPUT') return;
@@ -34,6 +36,14 @@ export class Input {
     window.addEventListener('blur', () => this.keys.clear());
   }
 
+  // While locked the player can't move the camera (World.frame still can). Also stops any drift.
+  get cameraLocked() { return this._locked; }
+  set cameraLocked(v) {
+    this._locked = !!v;
+    this.rig.locked = this._locked;
+    if (this._locked) { this.rig.velocity.set(0, 0, 0); if (this.panVel) this.panVel.set(0, 0, 0); }
+  }
+
   startPan(x, y) {
     this.rig.velocity.set(0, 0, 0);
     this.world.groundPoint(x, y, this.grab);
@@ -41,12 +51,13 @@ export class Input {
   }
 
   doPan(x, y) {
+    if (this._locked) return;
     const p = this.world.groundPoint(x, y, this.tmp);
     if (!p) return;
     const dx = this.grab.x - p.x, dz = this.grab.z - p.z;
     this.rig.target.x += dx;
     this.rig.target.z += dz;
-    this.rig.goal.target = null;
+    this.rig.stopGlide();
     this.rig.apply();
     const now = performance.now();
     const dt = Math.max(0.008, (now - this.lastMoveT) / 1000);
@@ -83,6 +94,7 @@ export class Input {
     const g = this.gesture;
     if (!g) return;
     if (g.mode === 'pinch' && this.pointers.size >= 2) {
+      if (this._locked) return;
       const [a, b] = [...this.pointers.values()];
       const d = Math.hypot(a.x - b.x, a.y - b.y);
       this.rig.setDist(g.startCam * (g.startDist / Math.max(20, d)));
@@ -113,7 +125,7 @@ export class Input {
     if (e.pointerId !== g.id) return;
     if (g.mode === 'pan') {
       if (!g.moved && !cancelled) this.h.onTap(e);
-      else if (this.panVel && performance.now() - this.lastMoveT < 80) this.rig.velocity.copy(this.panVel);
+      else if (!this._locked && this.panVel && performance.now() - this.lastMoveT < 80) this.rig.velocity.copy(this.panVel);
     } else if (g.mode === 'paint') {
       this.h.onPaintEnd && this.h.onPaintEnd(cancelled, e, g.moved);
     }
@@ -121,6 +133,7 @@ export class Input {
   }
 
   update(dt) {
+    if (this._locked) return;
     const k = this.keys;
     let fx = 0, fz = 0;
     if (k.has('w') || k.has('arrowup')) fz -= 1;
@@ -133,7 +146,7 @@ export class Input {
       // screen-relative movement
       this.rig.target.x += (Math.cos(yaw) * fx + Math.sin(yaw) * fz) * sp;
       this.rig.target.z += (-Math.sin(yaw) * fx + Math.cos(yaw) * fz) * sp;
-      this.rig.goal.target = null;
+      this.rig.stopGlide();
     }
     if (k.has('+') || k.has('=')) this.rig.zoomBy(1 - dt * 1.5);
     if (k.has('-') || k.has('_')) this.rig.zoomBy(1 + dt * 1.5);

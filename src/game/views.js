@@ -21,6 +21,29 @@ export function objectCenter(game, o, out = new THREE.Vector3()) {
   return out;
 }
 
+// World-space corners of an object's footprint ({ type, x, z, rot }) on the ground,
+// plus the same 4 at height h when h > 0 (so framing keeps the roof in view).
+export function objectCorners(game, o, h = 0) {
+  const [w, d] = game.objSize(o.type, o.rot || 0);
+  const x0 = o.x - MAP_SIZE / 2, z0 = o.z - MAP_SIZE / 2;
+  const pts = [];
+  for (const y of h > 0 ? [0, h] : [0]) {
+    for (const [dx, dz] of [[0, 0], [w, 0], [w, d], [0, d]]) pts.push(new THREE.Vector3(x0 + dx, y, z0 + dz));
+  }
+  return pts;
+}
+
+// Height of a baked model (top of its bounding box)
+export function modelHeight(key) {
+  let h = 0;
+  for (const p of getModel(key).parts) h = Math.max(h, p.geometry.boundingBox?.max.y ?? 0);
+  return h;
+}
+
+const defOf = (o) => OBJECTS[o.type] || {};
+// debris (weeds, stones, stumps) gets a per-tile model variant and a natural-looking yaw
+const tileHash = (x, z) => (((x * 73856093) ^ (z * 19349663)) >>> 0) % 1000 / 1000;
+
 // ------------------------------------------------------------------ soil + crops
 export class FarmView {
   constructor(scene, game) {
@@ -36,6 +59,7 @@ export class FarmView {
     this.soilPop = new Map(); // key -> t
     this.checkTimer = 0;
     this.time = 0;
+    this.markers = new TileMarkers(scene); // guide's ghost plots: farm.markers.show([[x, z], …]) / .clear()
     this.rebuildSoil();
     for (const k of Object.keys(game.s.soil)) this.syncCrop(k);
 
@@ -110,10 +134,11 @@ export class FarmView {
       }
       this.rebuildSoil();
     }
+    this.markers.update(dt);
   }
 }
 
-// ------------------------------------------------------------------ objects (buildings + decor)
+// ------------------------------------------------------------------ objects (buildings, decor, trees, debris)
 export class ObjectView {
   constructor(scene, game) {
     this.scene = scene;
@@ -124,16 +149,18 @@ export class ObjectView {
     game.on('objectRemoved', (o) => this.remove(o.id));
     game.on('objectMoved', ({ o }) => this.place(o));
     this.smoke = [];
+    this.dying = []; // removed objects shrinking away
     this.time = 0;
   }
 
-  // Trees show their life stage; everything else uses its type (or a model alias from config)
+  // Trees show their life stage; debris picks a variant per tile; everything else uses its type (or a model alias)
   modelKey(o) {
-    const def = OBJECTS[o.type];
+    const def = defOf(o);
     if (o.type === 'farmhouse') {
       const st = this.game.s.projects?.master?.stage || 0;
       return st ? `masterhouse:${st}` : 'farmhouse';
     }
+    if (def.kind === 'debris') return `${def.model || o.type}:${Math.floor(tileHash(o.x, o.z) * 3)}`;
     if (def.kind !== 'tree') return def.model || o.type;
     return `tree:${def.model}:${this.treeVisual(o)}`;
   }
@@ -144,7 +171,7 @@ export class ObjectView {
     if (st === 'dead') return 'dead';
     if (st === 'ready') return 'fruit';
     if (st === 'fruiting') return 'grown';
-    const def = OBJECTS[o.type];
+    const def = defOf(o);
     const p = (g.now() - o.plantedAt) / (def.growTime * 1000);
     return p < 0.4 ? 'sapling' : p < 1 ? 'young' : 'grown';
   }
@@ -153,7 +180,7 @@ export class ObjectView {
     const key = this.modelKey(o);
     const obj = makeObject(key);
     obj.userData.objectId = o.id;
-    if (OBJECTS[o.type].flat) obj.traverse((m) => { if (m.isMesh) m.castShadow = false; });
+    if (defOf(o).flat) obj.traverse((m) => { if (m.isMesh) m.castShadow = false; });
     this.scene.add(obj);
     const prev = this.map.get(o.id);
     if (prev) { this.scene.remove(prev.obj); obj.visible = prev.obj.visible; }
@@ -167,14 +194,22 @@ export class ObjectView {
     const e = this.map.get(o.id);
     if (!e) return;
     objectCenter(this.game, o, e.obj.position);
-    e.obj.rotation.y = o.rot * (Math.PI / 2);
+    e.obj.rotation.y = defOf(o).kind === 'debris' ? tileHash(o.z, o.x) * Math.PI * 2 : (o.rot || 0) * (Math.PI / 2);
   }
 
+  // Removed objects (decor, trees, cleared debris) shrink away quickly instead of vanishing
   remove(id) {
     const e = this.map.get(id);
     if (!e) return;
-    this.scene.remove(e.obj);
     this.map.delete(id);
+    if (!e.obj.visible) { this.scene.remove(e.obj); return; }
+    this.dying.push({ obj: e.obj, s: e.obj.scale.x, t: 0 });
+  }
+
+  // Footprint corners (ground + model top) of a placed object, for camera framing / guide rects
+  corners(o) {
+    const e = this.map.get(o.id);
+    return objectCorners(this.game, o, e ? modelHeight(e.key) : 1);
   }
 
   setHidden(id, hidden) {
@@ -191,17 +226,19 @@ export class ObjectView {
     if (this.checkTimer <= 0) {
       this.checkTimer = 0.5;
       for (const e of [...this.map.values()]) {
-        if ((OBJECTS[e.o.type].kind === 'tree' || e.o.type === 'farmhouse') && this.modelKey(e.o) !== e.key) this.add(e.o, true);
+        if ((defOf(e.o).kind === 'tree' || e.o.type === 'farmhouse') && this.modelKey(e.o) !== e.key) this.add(e.o, true);
       }
     }
     for (const e of this.map.values()) {
-      if (OBJECTS[e.o.type].kind === 'tree' && e.key.endsWith(':fruit')) {
+      if (defOf(e.o).kind === 'tree' && e.key.endsWith(':fruit')) {
         e.obj.rotation.z = Math.sin(this.time * 1.8 + e.o.id) * 0.02;
       }
       if (e.pop < 1) {
         e.pop = Math.min(1, e.pop + dt * 1.4);
         e.obj.scale.setScalar(popCurve(e.pop));
       }
+      // weeds rustle in the breeze
+      if (e.o.type === 'weed') e.obj.rotation.z = Math.sin(this.time * 1.7 + e.o.x * 0.9 + e.o.z * 0.6) * 0.06;
       // generic animated parts: models name children 'blades'/'spinZ', 'spinY' or 'bob'
       if (e.anim === undefined) {
         e.anim = [];
@@ -213,8 +250,8 @@ export class ObjectView {
         else a.c.rotation.z += dt * 1.2;
       }
       // chimney smoke while a factory is working (or always from the farmhouse)
-      const def = OBJECTS[e.o.type];
-      const working = def.kind === 'factory' && e.o.jobs.some((j) => j.endAt > now);
+      const def = defOf(e.o);
+      const working = def.kind === 'factory' && !!e.o.jobs?.some((j) => j.endAt > now);
       if ((working || e.o.type === 'farmhouse') && e.obj.visible) {
         e.smokeTimer -= dt;
         if (e.smokeTimer <= 0) {
@@ -235,6 +272,13 @@ export class ObjectView {
       s.mesh.scale.setScalar(0.15 + t * 0.45);
       s.mesh.material.opacity = 0.6 * (1 - t);
       if (t >= 1) { this.scene.remove(s.mesh); s.mesh.material.dispose(); this.smoke.splice(i, 1); }
+    }
+    for (let i = this.dying.length - 1; i >= 0; i--) {
+      const d = this.dying[i];
+      d.t = Math.min(1, d.t + dt * 4.5);
+      const k = 1 - d.t * d.t;
+      d.obj.scale.set(d.s * (1 + d.t * 0.25) * k, d.s * k, d.s * (1 + d.t * 0.25) * k);
+      if (d.t >= 1) { this.scene.remove(d.obj); this.dying.splice(i, 1); }
     }
   }
 
@@ -599,9 +643,12 @@ export class Ghost {
     scene.add(this.pad);
   }
 
+  // modelKey: what to draw (e.g. OBJECTS[type].model || type, or a tree stage key); type: footprint/rules type.
+  // Works for every placeable kind, including gift decor (scarecrow, birdbath, picnic).
   show(modelKey, type = modelKey) {
     this.hide();
     this.type = type;
+    this.height = modelHeight(modelKey);
     this.obj = makeObject(modelKey, { shadow: false });
     this.obj.traverse((m) => {
       if (m.isMesh) {
@@ -616,6 +663,7 @@ export class Ghost {
 
   update(x, z, rot, valid) {
     if (!this.obj) return;
+    Object.assign(this, { x, z, rot, valid });
     const fake = { type: this.type, x, z, rot };
     objectCenter(this.game, fake, this.obj.position);
     this.obj.position.y = 0.05 + Math.sin(performance.now() / 200) * 0.04;
@@ -633,6 +681,125 @@ export class Ghost {
     }
     this.obj = null;
     this.pad.visible = false;
+  }
+
+  get active() { return !!this.obj; }
+
+  // Footprint corners at the ground and at the model's top (for World.frame / projectRect); [] when hidden
+  corners() {
+    if (!this.obj || this.x === undefined) return [];
+    return objectCorners(this.game, { type: this.type, x: this.x, z: this.z, rot: this.rot }, this.height);
+  }
+}
+
+// ------------------------------------------------------------------ ghost plots (guide: "plow here")
+// Dashed, softly pulsing soil outlines on suggested tiles. Animates itself while rendered,
+// so callers only need show() / clear(); update(dt) is optional and idempotent.
+const MARKER_VERT = `
+varying vec2 vUv;
+void main() {
+  vUv = uv;
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+}`;
+const MARKER_FRAG = `
+uniform float uTime;
+uniform float uAlpha;
+uniform vec3 uFill;
+uniform vec3 uFurrow;
+uniform vec3 uLine;
+varying vec2 vUv;
+void main() {
+  vec2 p = vUv - 0.5;
+  // rounded square, half size 0.46, corner radius 0.1
+  vec2 q = abs(p) - vec2(0.36);
+  float d = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - 0.1;
+  float aa = fwidth(d) * 1.2;
+  float inside = 1.0 - smoothstep(-aa, aa, d);
+  if (inside <= 0.0) discard;
+  // perimeter coordinate 0..4 so the dashes march round the edge
+  float s = abs(p.x) > abs(p.y) ? (p.x > 0.0 ? 0.5 + p.y : 2.5 - p.y) : (p.y > 0.0 ? 1.5 - p.x : 3.5 + p.x);
+  float f = fract(s * 4.0 - uTime * 0.8);
+  float on = smoothstep(0.0, 0.05, f) * (1.0 - smoothstep(0.55, 0.6, f));
+  float band = smoothstep(-0.085 - aa, -0.085 + aa, d);
+  // soil furrows like a real plot
+  float fy = abs(fract(p.y * 3.5 + 0.5) - 0.5);
+  vec3 fill = mix(uFurrow, uFill, smoothstep(0.12, 0.16, fy));
+  vec3 col = mix(fill, uLine, band);
+  float a = mix(uAlpha, mix(0.3, 0.95, on), band) * inside;
+  gl_FragColor = vec4(col, a);
+  #include <colorspace_fragment>
+}`;
+
+export class TileMarkers {
+  constructor(scene) {
+    this.scene = scene;
+    this.group = new THREE.Group();
+    this.group.name = 'tileMarkers';
+    scene.add(this.group);
+    this.geo = new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2);
+    this.mat = new THREE.ShaderMaterial({
+      vertexShader: MARKER_VERT,
+      fragmentShader: MARKER_FRAG,
+      uniforms: {
+        uTime: { value: 0 }, uAlpha: { value: 0.4 },
+        uFill: { value: new THREE.Color('#9a6a3e') }, uFurrow: { value: new THREE.Color('#6d4325') }, uLine: { value: new THREE.Color('#ffffff') },
+      },
+      transparent: true,
+      depthWrite: false,
+      polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
+    });
+    this.meshes = [];
+    this.key = '';
+  }
+
+  get tiles() { return this.meshes.map((m) => m.userData.tile); }
+  get visible() { return this.meshes.length > 0; }
+
+  // tiles: [[x, z], …]. Showing the same set again keeps the current animation.
+  show(tiles = []) {
+    const key = tiles.map(([x, z]) => x + ',' + z).join(';');
+    if (key === this.key) return;
+    this.clear();
+    this.key = key;
+    const born = performance.now() / 1000;
+    tiles.forEach(([x, z], i) => {
+      const m = new THREE.Mesh(this.geo, this.mat);
+      tileToWorld(x, z, m.position);
+      m.position.y = 0.035;
+      m.scale.setScalar(0.001);
+      m.renderOrder = 2;
+      m.frustumCulled = false; // keep the self-animation running from scale ~0
+      m.userData = { tile: [x, z], born: born + i * 0.12, i };
+      m.onBeforeRender = () => this.animate(m, performance.now() / 1000);
+      this.group.add(m);
+      this.meshes.push(m);
+    });
+  }
+
+  clear() {
+    for (const m of this.meshes) this.group.remove(m);
+    this.meshes = [];
+    this.key = '';
+  }
+
+  animate(m, t) {
+    const u = this.mat.uniforms;
+    u.uTime.value = t;
+    u.uAlpha.value = 0.5 + Math.sin(t * 3.2) * 0.1;
+    const k = popCurve(THREE.MathUtils.clamp((t - m.userData.born) / 0.55, 0, 1));
+    m.scale.setScalar(Math.max(0.001, k * (1 + Math.sin(t * 3.2 + m.userData.i) * 0.03)));
+  }
+
+  update() {
+    const t = performance.now() / 1000;
+    for (const m of this.meshes) this.animate(m, t);
+  }
+
+  dispose() {
+    this.clear();
+    this.scene.remove(this.group);
+    this.geo.dispose();
+    this.mat.dispose();
   }
 }
 

@@ -1,11 +1,16 @@
-// Dev-only model gallery: /gallery.html?keys=coop,cow,crop:wheat:3:0
+// Dev-only model gallery: /gallery.html?keys=coop,cow,crop:wheat:3:0  (or ?set=debris)
 // Lays out the requested models in a grid with labels, for visual review of assets.
 import * as THREE from 'three';
 import { makeObject, BUILDERS } from './game/assets.js';
 import './game/models/index.js';
 
+// named presets for ?set=
+const SETS = {
+  debris: 'weed,weed:1,weed:2,stone,stone:1,stone:2,stump,stump:1,stump:2,soil,scarecrow,birdbath',
+};
+
 const params = new URLSearchParams(location.search);
-const keys = (params.get('keys') || Object.keys(BUILDERS).filter((k) => !['crop', 'cloud', 'truck', 'tree', 'npc'].includes(k)).join(',')).split(',').filter(Boolean);
+const keys = (params.get('keys') || SETS[params.get('set')] || Object.keys(BUILDERS).filter((k) => !['crop', 'cloud', 'truck', 'tree', 'npc'].includes(k)).join(',')).split(',').filter(Boolean);
 const cell = +(params.get('cell') || 4);
 let yaw = +(params.get('angle') || 0.6);
 const pitch = +(params.get('pitch') || 0.75);

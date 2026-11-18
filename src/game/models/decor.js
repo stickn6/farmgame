@@ -524,4 +524,128 @@ function balloon() {
   return group(P);
 }
 
-registerBuilders({ birdbath, picnic, flowerarch, fountain, gazebo, statue, balloon });
+// ------------------------------------------------------------------ starter debris (1x1)
+// The "gone a bit wild" farm: weeds, stones and stumps the player taps to clear.
+// Each takes an optional seed for a little variety (views pick one per tile: 'weed:2').
+const D = {
+  weed: '#3f7f2f', weedD: '#2f6526', weedL: '#5c9a38', moss: '#7fa653', mossD: '#5f8a3c',
+  rock: '#a9a59b', rockD: '#8a867d', rockL: '#c9c5ba', bark: '#6e4a2c', barkD: '#583a22',
+  ring: '#e2b47a', ringD: '#c79459', cap: '#d9534a',
+};
+
+// spiky leaf: a thin 4-sided cone tipped outward from the tuft's centre
+function blade(r, a, len, lean, col, d = 0.05) {
+  const b = cone(0.045, len, 4, col, 0, 0, 0);
+  b.position.y = len / 2;
+  const s = group(b);
+  s.position.set(Math.sin(a) * d, 0, Math.cos(a) * d);
+  s.rotation.set(Math.cos(a) * lean, r() * 0.8, -Math.sin(a) * lean, 'YXZ');
+  return s;
+}
+
+function weed(seed = 0) {
+  const r = hashRand(311 + +seed * 17);
+  const P = [];
+  // flat leaf rosette hugging the ground
+  for (let i = 0; i < 5; i++) {
+    const a = (i / 5) * TAU + r() * 0.5;
+    P.push(rot(scl(sph(0.11, i % 2 ? D.weedD : D.weed, Math.sin(a) * 0.15, 0.03, Math.cos(a) * 0.15, 5, 3), 0.55, 0.22, 1.25), 0, a, 0));
+  }
+  // spiky tuft
+  const n = 11;
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * TAU + r() * 0.4;
+    const len = 0.3 + r() * 0.28;
+    P.push(blade(r, a, len, 0.45 + r() * 0.4, [D.weed, D.weedD, D.weedL][i % 3], 0.07));
+  }
+  P.push(cone(0.06, 0.48 + r() * 0.08, 4, D.weedL, 0, 0, 0));
+  // a dandelion (or a white clover head) poking up
+  const fx = (r() - 0.5) * 0.14, fz = 0.1 + r() * 0.06;
+  const head = +seed % 3 === 2 ? C.white : C.yellow;
+  P.push(rot(cyl(0.016, 0.02, 0.52, 4, '#8fd45f', fx, 0, fz), 0.12, 0, -0.1));
+  P.push(scl(ball(0.075, head, fx + 0.026, 0.54, fz + 0.032), 1, 0.7, 1));
+  P.push(ball(0.032, head === C.white ? C.yellow : C.orange, fx + 0.026, 0.58, fz + 0.032));
+  // stray grass blades around the base
+  for (let i = 0; i < 4; i++) {
+    const a = r() * TAU, d = 0.28 + r() * 0.08;
+    P.push(rot(cone(0.025, 0.12 + r() * 0.08, 3, D.weedL, Math.sin(a) * d, 0, Math.cos(a) * d), (r() - 0.5) * 0.5, 0, (r() - 0.5) * 0.5));
+  }
+  const gr = group(P);
+  gr.rotation.y = r() * TAU;
+  return group(gr);
+}
+
+function stone(seed = 0) {
+  const r = hashRand(733 + +seed * 29);
+  // rounded rock sitting on the ground (scaled icosphere; sy squashes it)
+  const rock = (rad, col, x, z, sx, sy, sz, ry) => {
+    const m = scl(ball(rad, col, 0, 0, 0, 1), sx, sy, sz);
+    return at(group(m), x, rad * sy * 0.7, z, ry);
+  };
+  const P = [
+    // big rock, a medium one leaning on it and a pebble
+    rock(0.28, D.rock, -0.06, -0.03, 1.2, 0.85, 1.05, r() * 3),
+    rock(0.18, D.rockD, 0.22, 0.16, 1.1, 0.9, 1, r() * 3),
+    rock(0.1, D.rockL, -0.28, 0.22, 1.15, 0.8, 1, r() * 3),
+    // pale cap on the big rock, moss flecks on its shady side and on the middle one
+    scl(ball(0.15, D.rockL, -0.09, 0.38, 0.03, 1), 1.15, 0.35, 1),
+    scl(ball(0.09, D.moss, -0.14, 0.37, -0.12), 1.4, 0.35, 1.1),
+    scl(ball(0.06, D.mossD, 0.02, 0.33, -0.2), 1.3, 0.35, 1),
+    scl(ball(0.05, D.moss, 0.24, 0.3, 0.12), 1.2, 0.35, 1.2),
+  ];
+  // grass growing round the base
+  for (let i = 0; i < 5; i++) {
+    const a = 0.6 + i * 1.3 + r() * 0.4, d = 0.32 + r() * 0.06;
+    P.push(rot(cone(0.03, 0.14 + r() * 0.1, 3, i % 2 ? D.weedL : D.weed, Math.sin(a) * d, 0, Math.cos(a) * d), (r() - 0.5) * 0.5, 0, (r() - 0.5) * 0.5));
+  }
+  if (+seed % 2) P.push(at(flowerTuft(r, [C.white, C.yellow], 1), 0.3, 0, -0.2));
+  const gr = group(P);
+  gr.rotation.y = r() * TAU;
+  return group(gr);
+}
+
+function stump(seed = 0) {
+  const r = hashRand(977 + +seed * 41);
+  const H0 = 0.3 + r() * 0.06, R = 0.25;
+  const P = [
+    cyl(R, R + 0.03, H0, 8, D.bark, 0, 0, 0),
+    // cut top: pale wood with growth rings
+    cyl(R - 0.025, R - 0.025, 0.02, 8, D.ring, 0, H0, 0),
+    cyl(0.15, 0.15, 0.024, 8, D.ringD, 0, H0, 0),
+    cyl(0.12, 0.12, 0.028, 8, D.ring, 0, H0, 0),
+    cyl(0.05, 0.05, 0.032, 6, D.ringD, 0, H0, 0),
+  ];
+  // bark ridges
+  for (let i = 0; i < 6; i++) {
+    const a = (i / 6) * TAU + 0.3;
+    P.push(rot(box(0.05, H0 * (0.7 + r() * 0.25), 0.03, D.barkD, Math.sin(a) * (R + 0.01), 0, Math.cos(a) * (R + 0.01)), 0, a, 0));
+  }
+  // roots splaying into the grass
+  for (let i = 0; i < 4; i++) {
+    const a = (i / 4) * TAU + 0.5 + r() * 0.4;
+    const root = rot(box(0.1, 0.09, 0.26, D.bark, 0, 0, 0.12), -0.35, 0, 0);
+    P.push(at(group(root), Math.sin(a) * (R - 0.04), 0, Math.cos(a) * (R - 0.04), a));
+  }
+  // a hopeful little sprout on the cut top
+  const sx = 0.08, sz = 0.07;
+  P.push(
+    cyl(0.012, 0.014, 0.16, 4, D.weedL, sx, H0, sz),
+    rot(scl(sph(0.05, '#7cc35a', sx + 0.05, H0 + 0.15, sz, 5, 3), 1.2, 0.35, 0.7), 0, 0, 0.5),
+    rot(scl(sph(0.045, D.weedL, sx - 0.045, H0 + 0.13, sz, 5, 3), 1.2, 0.35, 0.7), 0, 0, -0.5),
+  );
+  // toadstool by the roots
+  P.push(
+    cyl(0.025, 0.03, 0.09, 5, C.cream, 0.27, 0, 0.2),
+    scl(sph(0.065, D.cap, 0.27, 0.09, 0.2, 6, 4), 1, 0.6, 1),
+    ball(0.012, C.white, 0.29, 0.125, 0.24), ball(0.012, C.white, 0.24, 0.12, 0.18),
+  );
+  for (let i = 0; i < 3; i++) {
+    const a = 3.4 + i * 0.7 + r() * 0.3, d = 0.34;
+    P.push(rot(cone(0.03, 0.12 + r() * 0.08, 3, D.weed, Math.sin(a) * d, 0, Math.cos(a) * d), (r() - 0.5) * 0.5, 0, (r() - 0.5) * 0.5));
+  }
+  const gr = group(P);
+  gr.rotation.y = r() * TAU;
+  return group(gr);
+}
+
+registerBuilders({ birdbath, picnic, flowerarch, fountain, gazebo, statue, balloon, weed, stone, stump });
