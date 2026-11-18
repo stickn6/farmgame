@@ -36,7 +36,7 @@ const POST_AWAY_AFTER = 20; // s after start: "A parcel came while you were away
 const IDLE_EVENTS = ['soil', 'animalChanged', 'animalAdded', 'factoryChanged', 'objectAdded', 'orderDone', 'visitorServed', 'quest',
   'daily', 'chores', 'land', 'storageUpgraded', 'debrisCleared', 'post'];
 const PLAN_EVENTS = [...IDLE_EVENTS, 'coins', 'inventory', 'levelup', 'orders', 'visitors', 'treeChanged', 'objectRemoved', 'objectMoved',
-  'questComplete', 'tutorial', 'gifts', 'chapter', 'wagon', 'postReady', 'keepsake', 'album', 'charm'];
+  'questComplete', 'tutorial', 'gifts', 'chapter', 'wagon', 'postReady', 'keepsake', 'album', 'charm', 'ribbons', 'gild'];
 
 const nowS = () => performance.now() / 1000;
 const shown = (el) => !!el && el.isConnected && !el.closest('.hud-hidden, .hidden');
@@ -1322,6 +1322,33 @@ export class GuideController {
           this.enqueue('gift:' + type, () => {
             this.ctrl.startPlacement(type, { gift: true, near: fieldCentre(g) });
             if (g.s.settings?.hints !== 'off') this.layer.coach(`${OBJECTS[type].icon} A ${OBJECTS[type].name} for your farm! Tap ✓ to put it up.`, 5000);
+          }, waits);
+        }
+        this.requestTick();
+      },
+    }));
+    this.requestTick();
+  }
+
+  // Ribbon ranks claimed with a decoration or a title (§4.3): one chest for the lot ("Ribbon rank 5!"), then the
+  // Blossom Oak / Frosted Pine go up through the gift queue. Gems-only ranks need no chest (main.js flies them).
+  ribbonPrize(list) {
+    const g = this.game;
+    if (!list?.length) return;
+    const top = list[list.length - 1];
+    const gifts = list.map((r) => r.gift).filter(Boolean);
+    const titles = list.map((r) => r.title).filter(Boolean);
+    const note = list.some((r) => r.rosette) ? '🎀 A prize rosette for your level star!' : 'Mayor Hank pins a new ribbon on your gate!';
+    this.enqueue('chest:ribbons:' + top.rank, () => this.hud.showChest({
+      custom: { kicker: list.length > 1 ? `Ribbon ranks ${list[0].rank}–${top.rank}!` : `Ribbon rank ${top.rank}!`, icon: '🎀', title: 'Prettiest Farm',
+        tiles: list.flatMap((r) => r.tiles || []), titles, note },
+      onOpen: () => {
+        for (const type of gifts) {
+          const waits = () => (g.s.gifts || []).includes(type);
+          if (!waits()) continue;
+          this.enqueue('gift:' + type, () => {
+            this.ctrl.startPlacement(type, { gift: true, near: fieldCentre(g) });
+            if (g.s.settings?.hints !== 'off') this.layer.coach(`${OBJECTS[type].icon} A ${OBJECTS[type].name} from Mayor Hank! Tap ✓ to put it up.`, 5000);
           }, waits);
         }
         this.requestTick();

@@ -41,7 +41,9 @@ npm run sim      # pacing simulator: how long each level/unlock takes, bots and 
 
 **The Post.** Your first parcel comes 5 minutes after you start, and each next one is on its way the moment you open the last: 10 min, 15 min, 30 min, then 3 hours, then every 8 hours. One always waits for you, even while the game is closed; parcels never pile up or expire. The 📪 pill (next to 🧭) counts down and turns into 📬 *Open!*; you open each parcel yourself with a little reveal. They come from Grandma Mabel and the villagers with a note, and hold gems, keepsakes for Mabel's album, pantry goods and a little coin that grows with your level (the first coins at 4 hours), plus a 📮 **Mailbox** for your farm at 1 hour: its flag goes up when a parcel waits. Parcels never give XP or building materials. Farms from before the Post get one *Post office opening* parcel instead of the welcome ones.
 
-**Mabel's Keepsake Album** (🏆 → 📖 Album). 72 keepsakes on 12 pages of 6. They turn up while you farm (each page has a favourite source: crops, animals, workshops, orders and visitors, fruit, or anywhere) and in parcels, and you never get a duplicate. The chance of a find grows with the XP an action earns, with a pity meter, so quick crops can't farm them. The album opens with Kip's clover in parcel #3 (or at level 8); page 1 opens with it, the others at levels 8, 11, 14, 17, 19, 24, 27, 31, 35, 37 and 39. A full page pays gems and a one-of-a-kind recoloured decoration (the Bluebird Bath, Copper Well, … Silver Rooster, Sky Balloon) to put up on the farm; the first 8 pages also bring the **Curio Cabinet** and the title *Keeper of Keepsakes*, all 12 *Valley Historian*. Album rewards never give XP or building materials. 🏆 **Treasures** holds the album and the achievements (**Awards**).
+**Mabel's Keepsake Album** (🏆 → 📖 Album). 72 keepsakes on 12 pages of 6. They turn up while you farm (each page has a favourite source: crops, animals, workshops, orders and visitors, fruit, or anywhere) and in parcels, and you never get a duplicate. The chance of a find grows with the XP an action earns, with a pity meter, so quick crops can't farm them. The album opens with Kip's clover in parcel #3 (or at level 8); page 1 opens with it, the others at levels 8, 11, 14, 17, 19, 24, 27, 31, 35, 37 and 39. A full page pays gems and a one-of-a-kind recoloured decoration (the Bluebird Bath, Copper Well, … Silver Rooster, Sky Balloon) to put up on the farm; the first 8 pages also bring the **Curio Cabinet** and the title *Keeper of Keepsakes*, all 12 *Valley Historian*. Album rewards never give XP or building materials. 🏆 **Treasures** holds the album, the ribbons and the achievements (**Awards**).
+
+**Mayor Hank's Prettiest Farm** (🏆 → 💗 Ribbons, from level 19). Decorations make your farm charming: every placed decoration adds 💗 charm (4·√price, or its own value for the one-of-a-kind pieces), and up to 3 of each kind count. Charm climbs 30 ribbon ranks that pay 124 gems in all, the **Blossom Oak** (rank 5) and **Frosted Pine** (rank 15), titles (*Charming Farm* … *Grand Champion Farm*) and, at rank 10, a 🎀 rosette on your level star. Claimed ranks are kept even if you sell decorations later. From level 31 you can **gild** a premium piece (a flower arch, fountain, gazebo, rooster or balloon, or its album recolour) with coins and gems or a gilding voucher from Mabel's last album pages: it shines gold and counts triple. Gilding is the late-game coin and gem sink (up to about 0.6M coins and 332 gems); selling a gilded piece refunds only the usual half price. Shop → Decor shows what each piece adds (💗 +253 · 1/3 counted), and tapping a decoration shows its charm and the ✨ Gild button. Ribbons never give XP, coins or building materials.
 
 **Village projects** (L16+). Restore the Old Bridge, the Bandstand and the Greenhouse, and turn your farmhouse into the **Master Farmhouse**. You donate coins and goods across 3 stages, which you can watch being built, and each finished project gives a small permanent perk.
 
@@ -139,6 +141,8 @@ Other beginner figures (median of 5 seeds):
 - about a third of the time is spent waiting on timers;
 - the Silo first reaches 90% at about 15 minutes.
 
+**Prettiest Farm.** The plain bots never decorate, so their charm is the starter decor (rank 1). A `--decorator 0.5` engaged bot puts up its gifts and, from L19, spends half of what it earns (above 2,000 + 400·L) on the best 💗 per coin, gilding from L31: rank 10 on day 10.4, rank 20 on day 20, all 30 on day 29 (about 0.26M coins and 170 gems sunk by then, out of 0.7M coins earned). A player who only puts up gifts reaches rank 3 at L19 (day 4.4) and rank 11 by day 25.
+
 **The Post and the album** never pay XP or building materials, and the first coins come at 4 hours. On days 2–30 they add, per day: 2 parcels, coins and pantry goods worth about 3% of the coins a player earns (engaged 3.1%, casual 3.3%, light players 5.3%, as intended catch-up), and about 6 new gems. With them turned off (`--features off`) the non-stop bot reaches every level up to L16 at exactly the same minute (the album draws from the save's own random numbers, so orders, visitors and drops don't change), and the engaged bot's L30 over 12 seeds is day 15.8 against 16.0 without them (a single seed can move by up to about three days either way).
 
 Before the v2 pacing update, the simulated player unlocked **everything in ~12 minutes**. The bots play efficiently, so real players will probably take 20–30% longer.
@@ -153,7 +157,7 @@ How it's paced:
 - **Catch-up rewards.** Chores, wagon crates and project stages pay a fixed *share of your current level*. That helps casual players without letting fast players race ahead.
 
 Commands:
-- `npm run sim` prints a pacing report, with a Post / album line per profile and each beginner seed's first parcel. `--profile active|casual|engaged|light|beginner` runs one profile; `--seeds n` sets the number of beginner seeds; `--seed n` picks the bots' seed; `--features off` turns the Post, the album and ribbons off (for an A/B; the v4 checks are skipped).
+- `npm run sim` prints a pacing report, with a Post / album line per profile and each beginner seed's first parcel. `--profile active|casual|engaged|light|beginner` runs one profile; `--seeds n` sets the number of beginner seeds; `--seed n` picks the bots' seed; `--features off` turns the Post, the album and ribbons off (for an A/B; the v4 checks are skipped); `--decorator 0.5` makes the bot decorate and gild (Prettiest Farm ranks on days 7–60 and the coins sunk; report only).
 - `npm run sim:check` fails if a balance change breaks these targets:
   - **Non-stop bot:**
     - L6 within 15 minutes, but L5 no sooner than 6.5 minutes and L7 no sooner than 18;
@@ -177,7 +181,8 @@ Commands:
     - the guided beginner opens parcel #1 between 5:00 and 6:30, before Chapter 1 ends (every seed);
     - the album isn't filled absurdly early: at most 16 keepsakes in 8 hours of non-stop play; the engaged bot completes pages 1–8 between day 15 and day 35, and all 12 between day 35 and day 60 (its run is 60 days);
     - the welcome parcels #1–#4 hold no coins or goods;
-    - levels 31, 35, 37 and 39 unlock something (album pages).
+    - levels 31, 35, 37 and 39 unlock something (album pages);
+    - Prettiest Farm: the engaged bot, which never decorates, stays below ribbon rank 10; an engaged decorator (`--decorator 0.5`, a 21-day run) reaches rank 10 no sooner than day 7.
 
 To add content, use the reserved levels 31+ (`FUTURE_SLOTS` in config.js). Give the new thing a level and a timer, and the price/XP formulas in config.js price it for you.
 

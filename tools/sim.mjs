@@ -7,11 +7,12 @@
 //   node tools/sim.mjs --hours 48 --profile active
 //   node tools/sim.mjs --profile beginner --seeds 9
 //   node tools/sim.mjs --profile engaged --seed 3 --features off   (v4's Post / album / charm turned off, for an A/B)
+//   node tools/sim.mjs --profile engaged --decorator 0.5   (a bot that decorates and gilds: Prettiest Farm ranks by day)
 import { Game } from '../src/game/state.js';
 import * as CFG from '../src/game/config.js';
 import { GuideFollower } from './simui.mjs';
 
-const { CROPS, ANIMALS, RECIPES, OBJECTS, ITEMS, STORAGE, ACHIEVEMENTS, VISITORS, PROJECTS, QUESTS, ALBUM } = CFG;
+const { CROPS, ANIMALS, RECIPES, OBJECTS, ITEMS, STORAGE, ACHIEVEMENTS, VISITORS, PROJECTS, QUESTS, ALBUM, CHARM } = CFG;
 const args = Object.fromEntries(process.argv.slice(2).map((a, i, arr) => a.startsWith('--') ? [a.slice(2), arr[i + 1] && !arr[i + 1].startsWith('--') ? arr[i + 1] : true] : null).filter(Boolean));
 
 // -------------------------------------------------------------------- bot
@@ -21,6 +22,56 @@ export class Bot {
     this.opts = opts;
     this.log = [];
     this.leaks = { xp: 0, materials: 0 }; // XP / building materials that v4 claims paid (must stay 0)
+    this.sunk = { coins: 0, gems: 0, placed: 0, gilded: 0 }; // what the decorator spent (opts.decorator)
+    this.lastDecor = -Infinity;
+  }
+
+  // opts.decorator = share (report only, --decorator): once an hour of play, put up every gift; from L19 that share
+  // of the coins earned goes to a decor fund, spent (while the wallet stays above 2,000 + 400·L) on the best 💗 per
+  // coin — a shop decoration that still counts (up to 3 of a kind), or from L31 gilding a counted premium piece
+  // (its gems too). The plain bots never decorate.
+  decorate() {
+    const g = this.g, share = this.opts.decorator;
+    if (!share || g.now() - this.lastDecor < 3600e3) return;
+    this.lastDecor = g.now();
+    for (const type of [...(g.s.gifts || [])]) {
+      const spot = this.findSpot(type);
+      if (spot) g.placeGift(type, spot[0], spot[1], 0);
+    }
+    const earned = g.stat('coinsEarned');
+    if (g.s.level < CHARM.level) { this.earnedAt = earned; return; }
+    this.fund = (this.fund || 0) + share * (earned - (this.earnedAt ?? earned));
+    this.earnedAt = earned;
+    let budget = Math.min(this.fund, g.s.coins - (2000 + 400 * g.s.level));
+    for (let n = 0; n < 40 && budget > 0; n++) {
+      const kinds = g.charm().kinds;
+      let best = null;
+      for (const [type, d] of Object.entries(OBJECTS)) {
+        if (d.kind !== 'decor' || d.level >= 99 || d.level > g.s.level || d.cost > budget) continue;
+        if ((kinds[type]?.counted || 0) >= CHARM.perKind) continue;
+        const v = CHARM.of(type) / Math.max(1, d.cost);
+        if (!best || v > best.v) best = { v, type, cost: d.cost };
+      }
+      for (const o of g.s.objects) {
+        const c = g.gildCost(o);
+        if (!c || c.coins > budget || g.s.gems < c.gems || !g.charm().of(o)) continue;
+        const v = (CHARM.gildMult - 1) * CHARM.of(o.type) / c.coins;
+        if (!best || v > best.v) best = { v, gild: o, cost: c.coins, gems: c.gems };
+      }
+      if (!best) break;
+      if (best.gild) {
+        if (!g.gild(best.gild)) break;
+        this.sunk.gems += best.gems;
+        this.sunk.gilded++;
+      } else {
+        const spot = this.findSpot(best.type);
+        if (!spot || !g.placeObject(best.type, spot[0], spot[1], 0)) break;
+        this.sunk.placed++;
+      }
+      this.sunk.coins += best.cost;
+      budget -= best.cost;
+      this.fund -= best.cost;
+    }
   }
 
   // a v4 claim (parcel, album page, ribbons) with a check that it paid no XP and no building materials
@@ -155,6 +206,7 @@ export class Bot {
     }
     // buy buildings / animals / land
     this.invest();
+    this.decorate();
     // plant
     const want = this.demand();
     for (const k of Object.keys(g.s.soil)) {
@@ -263,25 +315,27 @@ function seedRandom(seed) {
 // features: v4's { post, album, charm } flags (--features off turns them all off, for an A/B)
 export const FEATURES_OFF = { post: false, album: false, charm: false };
 
-export function run({ profile = 'active', hours = 24, seed = 1, features = undefined } = {}) {
+export function run({ profile = 'active', hours = 24, seed = 1, features = undefined, decorator = 0 } = {}) {
   let t = START;
   const start = t;
   seedRandom(seed);
   const g = new Game({ clock: () => t, storage: null, features });
-  const bot = new Bot(g);
+  const bot = new Bot(g, { decorator });
   const levelAt = { 1: 0 };
   const unlockAt = {};
   const mins = () => (t - start) / 60000;
   g.on('levelup', ({ level }) => { levelAt[level] = mins(); });
   // v4: when each parcel was opened, each keepsake found and each album page claimed (minutes), plus a ledger at
   // every day boundary (coins earned, the Post's coin value paid, v4 gems) for the per-day budget lines
-  const v4 = { parcels: [], keepsakes: [], pages: {}, launchAt: null, allAt: null, days: [] };
+  const v4 = { parcels: [], keepsakes: [], pages: {}, launchAt: null, allAt: null, days: [], ranks: {} };
+  g.on('ribbons', (e) => { for (const r of e.ranks) v4.ranks[r.rank] = mins(); });
   g.on('post', (r) => { v4.parcels.push({ at: mins(), n: r.n, kind: r.kind }); });
   g.on('keepsake', () => { v4.keepsakes.push(mins()); });
   g.on('albumPage', (r) => { v4.pages[r.id] = mins(); if (r.launch) v4.launchAt = mins(); if (r.title === ALBUM.all.title) v4.allAt = mins(); });
   const ledger = () => {
     const p = g.granted.post || {}, a = g.granted.album || {}, c = g.granted.charm || {};
-    return { earned: g.stat('coinsEarned'), post: (p.coins || 0) + (p.itemValue || 0), gems: (p.gems || 0) + (a.gems || 0), ribbonGems: c.gems || 0 };
+    return { earned: g.stat('coinsEarned'), post: (p.coins || 0) + (p.itemValue || 0), gems: (p.gems || 0) + (a.gems || 0), ribbonGems: c.gems || 0,
+      charm: g.charmStatus().total, rank: g.s.charm.ranks, sunk: bot.sunk.coins };
   };
   const STEP = 5000;
   // casual: 4 sessions/day of 8 minutes (08:00, 12:30, 18:00, 21:30), offline otherwise
@@ -309,12 +363,13 @@ export function run({ profile = 'active', hours = 24, seed = 1, features = undef
     if ((t - start) % 86400000 === 0) v4.days.push(ledger());
   }
   v4.leaks = bot.leaks;
+  v4.sunk = bot.sunk;
   for (const [id, c] of Object.entries(CROPS)) unlockAt['crop:' + id] = levelAt[c.level];
   for (const [id, a] of Object.entries(ANIMALS)) unlockAt['animal:' + id] = levelAt[a.level];
   for (const [id, o] of Object.entries(OBJECTS)) if (o.level < 99 && o.kind !== 'decor') unlockAt['obj:' + id] = levelAt[o.level];
   for (const [id, r] of Object.entries(RECIPES)) unlockAt['recipe:' + id] = levelAt[Math.max(r.level || 1, OBJECTS[r.building].level)];
   for (const [id, p] of Object.entries(PROJECTS)) unlockAt['project:' + id] = levelAt[p.level];
-  return { g, levelAt, unlockAt, activeMin: activeMs / 60000, v4, profile, hours };
+  return { g, levelAt, unlockAt, activeMin: activeMs / 60000, v4, profile, hours, decorator };
 }
 
 // v4 numbers of a bot run over days [from, to) (whole simulated days; d0 = the first 24 h): parcels a day, the
@@ -411,11 +466,21 @@ function reportV4(r) {
   const pages = ALBUM.pages.map((p, i) => (v4.pages[p.id] != null ? `${i + 1}@${fmt(v4.pages[p.id])}` : null)).filter(Boolean).join(' ');
   console.log(`album: ${v4.keepsakes.length} keepsakes (${v4.keepsakes.filter((m) => m <= 480).length} in the first 8 h) · pages claimed ${pages || 'none'}`
     + `${v4.launchAt != null ? ` · launch album @${fmt(v4.launchAt)}` : ''}${v4.allAt != null ? ` · all 12 @${fmt(v4.allAt)}` : ''}`);
-  if (g.features.charm && typeof g.charmStatus === 'function') {
+  if (g.features.charm) {
     const c = g.charmStatus();
-    console.log(`charm: 💗${c.total} · ribbon rank ${g.s.charm.ranks}${w ? ` · ribbon gems ${w.ribbonGemsPerDay.toFixed(1)}/day on days 2–${w.to}` : ''} (bots don't decorate)`);
+    console.log(`charm: 💗${c.total} · ribbon rank ${g.s.charm.ranks}${w ? ` · ribbon gems ${w.ribbonGemsPerDay.toFixed(1)}/day on days 2–${w.to}` : ''}${r.decorator ? '' : ' (bots don\'t decorate)'}`);
+    if (r.decorator) reportDecorator(r);
   }
   console.log(`v4 claims paid ${v4.leaks.xp} XP and ${v4.leaks.materials} building materials`);
+}
+
+// the --decorator bot: its rank on days 7/14/21/30/45/60, when it reached ranks 10/20/30, and what it sank
+function reportDecorator(r) {
+  const { v4 } = r;
+  const days = [7, 14, 21, 30, 45, 60].filter((d) => d < v4.days.length).map((d) => `d${d} R${v4.days[d].rank} (💗${v4.days[d].charm})`).join(' · ');
+  const at = (k) => (v4.ranks[k] != null ? fmt(v4.ranks[k]) : '—');
+  console.log(`decorator ${r.decorator} (from L${CHARM.level}: ${Math.round(r.decorator * 100)}% of the coins earned on 💗 while above 2,000 + 400·L, gilding from L${CHARM.gildLevel}): ${days || 'under a week'}`);
+  console.log(`        rank 10 @${at(10)} · 20 @${at(20)} · 30 @${at(30)} · sank 🪙${v4.sunk.coins.toLocaleString('en-US')} and 💎${v4.sunk.gems} (${v4.sunk.placed} decorations, ${v4.sunk.gilded} gilded)`);
 }
 
 export function dump(g) {
@@ -431,10 +496,10 @@ export function dump(g) {
 
 const fmt = (m) => (m == null ? '—' : m < 90 ? `${m.toFixed(1)}m` : m < 60 * 48 ? `${(m / 60).toFixed(1)}h` : `${(m / 1440).toFixed(1)}d`);
 
-function report(profile, hours) {
-  const r = run({ profile, hours, seed: +(args.seed || 1), features });
+function report(profile, hours, decorator = +(args.decorator || 0)) {
+  const r = run({ profile, hours, seed: +(args.seed || 1), features, decorator });
   const { g, levelAt, unlockAt } = r;
-  console.log(`\n=== ${profile.toUpperCase()} player, ${hours}h simulated (${fmt(r.activeMin)} actually playing)${args.seed ? `, seed ${args.seed}` : ''}${features ? ', v4 features off' : ''} ===`);
+  console.log(`\n=== ${profile.toUpperCase()} player, ${hours}h simulated (${fmt(r.activeMin)} actually playing)${args.seed ? `, seed ${args.seed}` : ''}${features ? ', v4 features off' : ''}${decorator ? `, decorator ${decorator}` : ''} ===`);
   console.log(`final level ${g.s.level}, coins ${g.s.coins}, gems ${g.s.gems}, fields ${Object.keys(g.s.soil).length}/${g.plotCap()}, animals ${g.s.animals.length}, buildings ${g.s.objects.filter((o) => !['decor', 'tree'].includes(OBJECTS[o.type].kind)).length}, trees ${g.s.objects.filter((o) => OBJECTS[o.type].kind === 'tree').length}, land ${g.s.landSize}, storage ${JSON.stringify(g.s.storage)}, visitors served ${g.stat('visitors')}, orders ${g.s.stats.orders}`);
   const lv = Object.entries(levelAt).map(([l, m]) => `L${l}@${fmt(m)}`);
   console.log('levels:', lv.join('  '));
@@ -455,13 +520,21 @@ if (isMain && (!args.profile || args.profile === 'casual')) results.casual = rep
 // (60 days: long enough to see the album's launch (pages 1–8) and all 12 pages)
 if (isMain && (args.profile === 'engaged' || args.check)) results.engaged = report('engaged', +(args.engagedHours || 24 * 60));
 if (isMain && args.profile === 'light') results.light = report('light', +(args.lightHours || 24 * 40));
+// N9: an engaged player who decorates (half the spare coins, report only): Prettiest Farm rank 10 no sooner than day 7
+if (isMain && args.check && v4On) {
+  const r = run({ profile: 'engaged', hours: +(args.decoratorHours || 24 * 21), seed: +(args.seed || 1), decorator: 0.5 });
+  console.log(`\n=== ENGAGED DECORATOR (0.5), ${fmt(r.hours * 60)} simulated ===`);
+  reportDecorator(r);
+  results.decorator = r;
+}
 // the beginner's visitors and orders are random, so it runs several seeds and the checks use every seed
 // (or the median, for the one goal that waits on random visitors)
 if (isMain && (!args.profile || args.profile === 'beginner' || args.check)) results.beginner = reportBeginner(Math.max(1, +(args.seeds || 5)));
 
 // v4 guardrails: no XP or materials from any v4 reward, the Post's schedule, the album (and ribbons) never finished
 // absurdly early, the beginner's parcel #1 inside Chapter 1, and static config checks.
-function v4Checks({ active: Ar, engaged: Er, beginner: B = [] }) {
+function v4Checks(results) {
+  const { active: Ar, engaged: Er, beginner: B = [] } = results;
   const out = [];
   // N2: XP and building materials paid by v4 claims (measured around every bot claim) and grant()'s own tallies
   const tallies = (g) => Object.values(g.granted).reduce((n, t) => n + (t.xp || 0) + (t.materials || 0) + Object.keys(t.items || {}).filter((i) => ITEMS[i]?.cat === 'material').length, 0);
@@ -488,9 +561,15 @@ function v4Checks({ active: Ar, engaged: Er, beginner: B = [] }) {
     const L = Er.v4.launchAt, all = Er.v4.allAt, end = Er.hours * 60;
     out.push(['v4: engaged completes album pages 1–8 between day 15 and day 35', L != null && L >= 15 * 1440 && L <= 35 * 1440, fmt(L)]);
     out.push([`v4: engaged completes all 12 album pages no sooner than day 35${end >= 60 * 1440 ? ' and by day 60' : ''}`, all == null ? end < 60 * 1440 : all >= 35 * 1440 && all <= 60 * 1440, all == null ? `not in ${fmt(end)}` : fmt(all)]);
-    if (Er.g.features.charm && typeof Er.g.charmStatus === 'function') {
+    if (Er.g.features.charm) {
       out.push(['charm: the engaged bot (no decorating) never reaches ribbon rank 10', (Er.g.s.charm?.ranks || 0) < 10, `rank ${Er.g.s.charm?.ranks || 0}`]);
     }
+  }
+  // N9: a decorator (half the spare coins on 💗) earns Prettiest Farm rank 10 no sooner than day 7
+  const D = results.decorator;
+  if (D) {
+    const r10 = D.v4.ranks[10];
+    out.push(['charm: an engaged decorator (--decorator 0.5) reaches ribbon rank 10 no sooner than day 7', r10 == null ? D.hours >= 7 * 24 : r10 >= 7 * 1440, r10 == null ? `not in ${fmt(D.hours * 60)}` : fmt(r10)]);
   }
   // N6: no coins or goods in the welcome parcels #1–#4 (the coin-gated anti-rush window stays untouched)
   const probe = new Game({ clock: () => START, storage: null });

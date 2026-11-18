@@ -5,7 +5,7 @@ import {
   CHORES, WAGON, PROJECTS, PROJECT_REWARD, MAX_CROP_SPEEDUP, xpToNext,
   ITEMS, CROPS, ANIMALS, RECIPES, OBJECTS, QUESTS, REPEAT_QUESTS, ORDERS, START,
   xpForLevel, producibleItems, levelUpReward,
-  CHAPTERS, QUEST_MIGRATION_V3, V2_QUEST_COUNT, GUIDE, TUTORIAL, FEATURE_TIPS, tutorialTile, POST, ALBUM, KEEPSAKES,
+  CHAPTERS, QUEST_MIGRATION_V3, V2_QUEST_COUNT, GUIDE, TUTORIAL, FEATURE_TIPS, tutorialTile, POST, ALBUM, KEEPSAKES, CHARM,
 } from './config.js';
 import * as layout from './layout.js';
 
@@ -81,11 +81,14 @@ const dayNumber = (ms) => { const d = new Date(ms); return Math.floor((ms - d.ge
 export class Game extends Emitter {
   // opts.clock: () => ms timestamp (lets the simulator run at accelerated time)
   // opts.storage: localStorage-like object, or null to disable persistence
-  // opts.features: { post, album, charm } (the sim's --features off A/B turns them off). charm (Prettiest Farm:
-  // charm, ribbons, gilding) is off until it ships: until then a gilding voucher is paid as 💎15 instead.
+  // opts.features: { post, album, charm } (the sim's --features off A/B turns them off). With charm (Prettiest
+  // Farm: charm, ribbons, gilding) off, a gilding voucher is paid as 💎15 instead.
   constructor(opts = {}) {
     super();
-    this.features = { post: true, album: true, charm: false, ...(opts.features || {}) };
+    this.features = { post: true, album: true, charm: true, ...(opts.features || {}) };
+    // the charm memo (see charm()) follows every placed, removed or changed (gilded) object
+    this._charmRev = 0;
+    for (const e of ['objectAdded', 'objectRemoved', 'objectChanged']) this.on(e, () => this.charmChanged());
     this.granted = {}; // source → what grant() paid out this session (not saved): the sim and tests read it
     this.clock = opts.clock || (() => Date.now());
     this.storage = opts.storage !== undefined ? opts.storage : (typeof localStorage !== 'undefined' ? localStorage : null);
@@ -1880,10 +1883,121 @@ export class Game extends Emitter {
     if (a.fresh.length !== before) { this.emit('album', a); this.saveSoon(); }
   }
 
-  // titles earned (the album's, later the ribbons'), shown with the farm
+  // titles earned (the album's and the ribbons'), shown with the farm
   addTitle(title) {
     const list = (this.s.charm.titles ||= []);
     if (title && !list.includes(title)) list.push(title);
+  }
+
+  // ------------------------------------------------------------ Prettiest Farm: 💗 charm, ribbons, gilding (§4)
+  // Charm is derived from the placed decorations (never s.gifts): up to 3 of each kind count — the gilded copies
+  // first — and a gilded copy counts triple. Memoised; placing, removing or gilding anything invalidates it.
+  // → { total, kinds: { type: { placed, counted, gilded } }, of(o): the 💗 o adds now (0 = a 4th copy) }
+  charm() {
+    const s = this.s, m = this._charm;
+    if (m && m.s === s && m.objects === s.objects && m.n === s.objects.length && m.rev === this._charmRev) return m;
+    const byType = new Map();
+    for (const o of s.objects) {
+      if (OBJECTS[o.type]?.kind !== 'decor') continue;
+      if (!byType.has(o.type)) byType.set(o.type, []);
+      byType.get(o.type).push(o);
+    }
+    let total = 0;
+    const counted = new Map(); // object id → its 💗
+    const kinds = {};
+    for (const [type, list] of byType) {
+      const each = CHARM.of(type);
+      const top = [...list].sort((a, b) => (b.gilded ? 1 : 0) - (a.gilded ? 1 : 0) || a.id - b.id).slice(0, CHARM.perKind);
+      for (const o of top) { const v = each * (o.gilded ? CHARM.gildMult : 1); counted.set(o.id, v); total += v; }
+      kinds[type] = { placed: list.length, counted: top.length, gilded: list.filter((o) => o.gilded).length };
+    }
+    this._charm = { s, objects: s.objects, n: s.objects.length, rev: this._charmRev, total, kinds, of: (o) => counted.get(o?.id) || 0 };
+    return this._charm;
+  }
+
+  // an object was placed, removed or gilded: the memo is stale; 'charm' { total } goes out when the total moved
+  charmChanged() {
+    const before = this._charm?.s === this.s ? this._charm.total : null;
+    this._charmRev++;
+    if (!this.features.charm || !this.s) return;
+    const total = this.charm().total;
+    if (total !== before) this.emit('charm', { total });
+  }
+
+  // { unlocked (L19), total, ranks (claimed), reached (by today's charm), ready (ranks to claim), next: { rank, need,
+  //   reward } | null (the next one to reach), gildUnlocked (L31), vouchers, rosette (rank 10 claimed) }
+  charmStatus() {
+    const on = !!this.features.charm;
+    const c = this.s.charm || {};
+    const total = on ? this.charm().total : 0;
+    const ranks = c.ranks || 0;
+    let reached = 0;
+    while (reached < CHARM.ranks && total >= CHARM.rank(reached + 1)) reached++;
+    const unlocked = on && this.s.level >= CHARM.level;
+    const nr = Math.max(ranks, reached) + 1;
+    return {
+      unlocked, total, ranks, reached, ready: unlocked ? Math.max(0, reached - ranks) : 0,
+      next: nr <= CHARM.ranks ? { rank: nr, need: CHARM.rank(nr), reward: CHARM.rewards[nr - 1] } : null,
+      gildUnlocked: on && this.s.level >= CHARM.gildLevel, vouchers: on ? c.vouchers || 0 : 0, rosette: on && ranks >= CHARM.rosetteRank,
+    };
+  }
+
+  // Claim every rank the farm's charm has reached, in order, through grant('charm'): gems, the Blossom Oak (rank 5)
+  // and Frosted Pine (15) to s.gifts, titles. Ranks never go back: removing decor later keeps what was claimed.
+  // → [{ rank, gems, gift, title, rosette, tiles }] (empty when nothing is ready)
+  claimRibbons() {
+    const st = this.charmStatus();
+    if (!st.ready) return [];
+    const c = this.s.charm;
+    const out = [];
+    while (c.ranks < st.reached) {
+      const rank = c.ranks + 1;
+      const rw = CHARM.rewards[rank - 1] || {};
+      c.ranks = rank;
+      const gift = rw.gift && OBJECTS[rw.gift] ? rw.gift : null;
+      const tiles = this.grant('charm', { gems: rw.gems, gift, place: !!gift });
+      if (rw.title) this.addTitle(rw.title);
+      out.push({ rank, gems: rw.gems || 0, gift, title: rw.title || null, rosette: !!rw.rosette, tiles });
+    }
+    this.emit('ribbons', { ranks: out });
+    this.saveSoon();
+    return out;
+  }
+
+  // What gilding o costs: null when it can't be gilded (charm off, before L31, already gilded, or not a premium
+  // decoration: its base price — the piece it recolours — under 🪙1,500); else { coins, gems, base, voucher }
+  // (voucher: a gilding voucher could pay instead).
+  gildCost(o) {
+    o = this.objById.get(typeof o === 'object' ? o?.id : o);
+    if (!o || !this.features.charm || o.gilded || this.s.level < CHARM.gildLevel || OBJECTS[o.type]?.kind !== 'decor') return null;
+    const base = CHARM.gildBase(o.type);
+    if (base < CHARM.gildMin) return null;
+    return { ...CHARM.gildCost(base), base, voucher: (this.s.charm.vouchers || 0) > 0 };
+  }
+
+  // Gild a premium decoration: pay coins + gems, or one voucher. It shines gold and counts triple. Selling it later
+  // refunds only the usual half price (never the gilding). → { o, voucher, coins, gems } | null
+  gild(o, { voucher = false } = {}) {
+    o = this.objById.get(typeof o === 'object' ? o?.id : o);
+    const cost = o && this.gildCost(o);
+    if (!cost) return null;
+    const c = this.s.charm;
+    if (voucher) {
+      if (!(c.vouchers > 0)) return null;
+      c.vouchers--;
+    } else {
+      if (this.s.coins < cost.coins) { this.emit('toast', { text: 'Not enough coins!', type: 'bad' }); return null; }
+      if (this.s.gems < cost.gems) { this.emit('toast', { text: 'Not enough gems 💎', type: 'bad' }); return null; }
+      this.spend(cost.coins);
+      this.spendGems(cost.gems);
+    }
+    o.gilded = true;
+    this.bumpStat('gilded');
+    const r = { o, voucher: !!voucher, coins: voucher ? 0 : cost.coins, gems: voucher ? 0 : cost.gems };
+    this.emit('objectChanged', o); // the charm memo; the view re-adds it in gold
+    this.emit('gild', r);
+    this.saveSoon();
+    return r;
   }
 
   // ------------------------------------------------------------ achievements

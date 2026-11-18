@@ -4,7 +4,7 @@
 import * as CONFIG from '../game/config.js';
 import {
   ITEMS, CROPS, ANIMALS, OBJECTS, RECIPES, STORAGE, ACHIEVEMENTS, DAILY, VISITORS, MASTERY, PLOTS,
-  CHORES, WAGON, PROJECTS, CAMERA, POST, KEEPSAKES, ALBUM, xpForLevel, unlocksAtLevel, nextUnlockLevel,
+  CHORES, WAGON, PROJECTS, CAMERA, POST, KEEPSAKES, ALBUM, CHARM, xpForLevel, unlocksAtLevel, nextUnlockLevel,
 } from '../game/config.js';
 import { isHome } from '../game/camera.js';
 
@@ -57,7 +57,7 @@ export function fmtClock(sec) {
   return hr ? `${hr}:${String(m).padStart(2, '0')}:${s}` : `${m}:${s}`;
 }
 
-const fmtNum = (n) => n.toLocaleString('en-US');
+export const fmtNum = (n) => n.toLocaleString('en-US');
 // the Post's countdown: 4:12 under an hour, 3h 12m above
 export const postClock = (ms) => {
   const sec = Math.max(0, Math.ceil(ms / 1000));
@@ -143,13 +143,15 @@ export class HUD {
     this.xpFill = h('div', { class: 'xp-fill' });
     this.xpText = h('div', { class: 'xp-text' }, '');
     this.nextHint = h('div', { class: 'next-hint' }, '');
+    // 🎀 Prettiest Farm rank 10: a prize rosette pinned to the level star
+    this.rosetteEl = h('span', { class: 'lvl-rosette hidden', title: 'Prize Farm rosette', 'aria-hidden': 'true' }, '🎀');
     this.levelBoxEl = h('div', { class: 'level-box', 'data-guide': 'level:box', 'data-reveal': 'level', onclick: () => this.openFarmhouse('progress') },
-      h('div', { class: 'level-star' }, this.levelNum),
+      h('div', { class: 'level-star' }, this.levelNum), this.rosetteEl, // (outside the star's clip-path)
       h('div', { class: 'xp-col' }, h('div', { class: 'xp-bar' }, this.xpFill, this.xpText), this.nextHint),
     );
     const badge = () => h('span', { class: 'badge hidden' }, '');
     this.dailyBtn = h('button', { class: 'round-btn', title: 'Today: gift & chores', 'data-guide': 'btn:today', 'data-reveal': 'today', onclick: () => this.openToday() }, '🎁', badge());
-    this.trophyBtn = h('button', { class: 'round-btn', title: 'Treasures: album & awards', 'data-guide': 'btn:trophy', 'data-reveal': 'trophy', onclick: () => this.openTreasures() }, '🏆', badge());
+    this.trophyBtn = h('button', { class: 'round-btn', title: 'Treasures: album, ribbons & awards', 'data-guide': 'btn:trophy', 'data-reveal': 'trophy', onclick: () => this.openTreasures() }, '🏆', badge());
     this.settingsBtn = h('button', { class: 'round-btn', title: 'Farm & settings', 'data-guide': 'btn:settings', onclick: () => this.openFarmhouse('farm') }, '⚙️');
 
     this.questIcon = h('div', { class: 'q-icon' }, '📜');
@@ -289,9 +291,28 @@ export class HUD {
     g.on('post', () => { this.refreshPostPill(); this.refreshPanel(); });
     // Mabel's album: the 🏆 badge and an open Treasures panel follow every find and claim
     g.on('album', () => { this.refreshBadges(); if (this.panel?.id === 'treasures') this.refreshPanel(); });
+    // Prettiest Farm: charm moved (decor placed, sold or gilded), ribbons claimed, a level reached (L19 opens it)
+    g.on('charm', () => this.charmMoved());
+    g.on('ribbons', () => { this.refreshBadges(); this.refreshLevelStar(); if (this.panel?.id === 'treasures') this.refreshPanel(); });
+    g.on('levelup', () => this.refreshBadges());
+  }
+
+  // the 🏆 badge follows charm; a newly reached ribbon rank bumps 🏆 once
+  charmMoved() {
+    const ready = this.game.charmStatus().ready;
+    if (ready > (this._ribbonsReady || 0)) { const b = this.trophyBtn; b.classList.remove('bump'); void b.offsetWidth; b.classList.add('bump'); }
+    this._ribbonsReady = ready;
+    this.refreshBadges();
+    if (this.panel?.id === 'treasures') this.refreshPanel();
+  }
+
+  refreshLevelStar() {
+    this.rosetteEl.classList.toggle('hidden', !this.game.charmStatus().rosette);
   }
 
   refreshAll() {
+    this.refreshLevelStar();
+    this._ribbonsReady = this.game.charmStatus().ready;
     this.refreshCoins();
     this.refreshGems();
     this.refreshXp();
@@ -557,8 +578,9 @@ export class HUD {
   showPlaceBar(type, cost, opts = {}) {
     const info = this.placeBar.querySelector('.place-info');
     info.innerHTML = '';
-    info.append(h('span', { class: 'place-name' }, `${OBJECTS[type].icon || ''} ${OBJECTS[type].name}`),
-      opts.gift ? h('span', { class: 'place-cost gift' }, '🎁 Gift · free') : cost ? h('span', { class: 'place-cost' }, `🪙 ${fmtNum(cost)}`) : null);
+    // (a move has no price line: Element.append would print a null)
+    info.append(...[h('span', { class: 'place-name' }, `${OBJECTS[type].icon || ''} ${OBJECTS[type].name}`),
+      opts.gift ? h('span', { class: 'place-cost gift' }, '🎁 Gift · free') : cost ? h('span', { class: 'place-cost' }, `🪙 ${fmtNum(cost)}`) : null].filter(Boolean));
     this.closeSeedPopover();
     this.placeBar.classList.remove('hidden');
     this.toolbar.classList.add('hidden');
@@ -1115,6 +1137,7 @@ export class HUD {
     p.body.innerHTML = '';
     p.body.append(p.render(p.tab));
     p.body.scrollTop = scroll;
+    p.lastTab = p.tab;
   }
 
   closePanel(instant = false) {
@@ -1262,7 +1285,14 @@ export class HUD {
       }));
     } else if (tab === 'decor') {
       // (one-of-a-kind decorations, level 99, only ever come as gifts)
-      addCards((d) => d.kind === 'decor' && d.level < 99, (id, d) => this.shopCard({ icon: d.icon, name: d.name, cost: d.cost, level: d.level, guide: 'shop:buy:' + id, onBuy: () => { this.closePanel(); this.ctrl.startPlacement(id); } }));
+      // (from L19) what one more adds to 💗 charm: up to 3 of each kind count
+      const charm = g.charmStatus().unlocked ? g.charm() : null;
+      const charmLine = (id) => {
+        if (!charm) return null;
+        const n = charm.kinds[id]?.counted || 0;
+        return n < CHARM.perKind ? `💗 +${fmtNum(CHARM.of(id))} · ${n}/${CHARM.perKind} counted` : '💗 maxed — still pretty!';
+      };
+      addCards((d) => d.kind === 'decor' && d.level < 99, (id, d) => this.shopCard({ icon: d.icon, name: d.name, cost: d.cost, level: d.level, guide: 'shop:buy:' + id, sub: charmLine(id), onBuy: () => { this.closePanel(); this.ctrl.startPlacement(id); } }));
       const gifts = this.renderGifts();
       if (gifts) return h('div', {}, gifts, grid, hidden.n ? h('div', { class: 'tip' }, `✨ ${hidden.n} more to discover as you level up`) : null);
     } else if (tab === 'land') {
@@ -1671,16 +1701,64 @@ export class HUD {
   }
 
   // ---------------------------------------------------------------- decor
+  // Move / Sell; from L19 the charm it adds (💗 60 · counts (2/3)); from L31 on premium pieces ✨ Gild (coins + gems,
+  // or a voucher). Gilding, and selling a gilded piece (its gilding is never refunded), take a second tap.
   openDecor(o) {
     const d = OBJECTS[o.type];
+    const arm = { gild: null, sell: false, t: 0 };
+    // an armed button (gild, sell gilded) goes back to normal after 4 s
+    const disarm = () => {
+      clearTimeout(arm.t);
+      arm.t = setTimeout(() => { arm.gild = null; arm.sell = false; if (this.panel?.id === 'decor' && this.panel.ref === o.id) this.refreshPanel(); }, 4000);
+    };
     this.openPanel({
       id: 'decor', ref: o.id,
-      title: `${d.icon} ${d.name}`, cls: 'small',
-      render: () => h('div', { class: 'panel-foot center' },
-        h('button', { class: 'btn', onclick: () => { this.closePanel(); this.ctrl.startPlacement(o.type, o.id); } }, '✥ Move'),
-        // a free one (starter decor, a chapter gift) refunds nothing
-        h('button', { class: 'btn red', onclick: () => { this.closePanel(); this.ctrl.removeObject(o); } }, o.free ? 'Remove' : `Sell 🪙${Math.floor(d.cost / 2)}`),
-      ),
+      title: `${o.gilded ? '✨ ' : ''}${d.icon} ${d.name}`, cls: 'small',
+      render: () => {
+        const g = this.game;
+        const st = g.charmStatus();
+        const wrap = h('div', { class: 'decor-panel' });
+        if (st.unlocked) {
+          const k = g.charm().kinds[o.type] || { counted: 0 };
+          const v = g.charm().of(o);
+          wrap.append(h('div', { class: 'decor-charm' + (v ? '' : ' muted') }, v
+            ? `💗 ${fmtNum(v)}${o.gilded ? ' · gilded ×3' : ''} · counts (${k.counted}/${CHARM.perKind})`
+            : `💗 0 · only ${CHARM.perKind} of each kind count — this one is just for looks`));
+        }
+        const cost = g.gildCost(o);
+        if (cost) {
+          const press = (key, fn) => () => {
+            if (arm.gild !== key) { arm.gild = key; this.audio.play('click'); disarm(); this.refreshPanel(); return; }
+            this.closePanel();
+            fn();
+          };
+          const gilds = h('div', { class: 'gild-btns' });
+          if (cost.voucher) {
+            gilds.append(h('button', { class: 'btn gild' + (arm.gild === 'voucher' ? ' armed' : ''), onclick: press('voucher', () => this.ctrl.gild?.(o, { voucher: true })) },
+              arm.gild === 'voucher' ? '✨ Tap again to gild' : `✨ Gild with a voucher (${st.vouchers} left)`));
+          }
+          const afford = g.s.coins >= cost.coins && g.s.gems >= cost.gems;
+          gilds.append(h('button', { class: 'btn gild' + (cost.voucher ? ' ghost' : '') + (afford ? '' : ' disabled') + (arm.gild === 'coins' ? ' armed' : ''),
+            onclick: afford ? press('coins', () => this.ctrl.gild?.(o)) : () => this.toast(g.s.coins < cost.coins ? 'Not enough coins!' : 'Not enough gems 💎', 'bad') },
+          arm.gild === 'coins' ? '✨ Tap again to gild' : `✨ Gild — 🪙${fmtNum(cost.coins)} 💎${cost.gems}`));
+          wrap.append(gilds, h('div', { class: 'muted small center' }, 'Gold, and triple 💗 charm.'));
+        } else if (o.gilded) {
+          wrap.append(h('div', { class: 'muted small center' }, '✨ Gilded: it shines gold and counts triple.'));
+        } else if (st.unlocked && !st.gildUnlocked && CHARM.gildBase(o.type) >= CHARM.gildMin) {
+          wrap.append(h('div', { class: 'muted small center' }, `✨ Gilding opens at level ${CHARM.gildLevel}: gold, and triple 💗.`));
+        }
+        // a free one (starter decor, a gift) refunds nothing; a gilded one's gilding is never refunded
+        const sellText = o.free ? 'Remove' : `Sell 🪙${fmtNum(Math.floor(d.cost / 2))}`;
+        wrap.append(h('div', { class: 'panel-foot center' },
+          h('button', { class: 'btn', onclick: () => { this.closePanel(); this.ctrl.startPlacement(o.type, o.id); } }, '✥ Move'),
+          h('button', { class: 'btn red' + (arm.sell ? ' armed' : ''), onclick: () => {
+            if (o.gilded && !arm.sell) { arm.sell = true; this.audio.play('click'); disarm(); this.refreshPanel(); return; }
+            this.closePanel();
+            this.ctrl.removeObject(o);
+          } }, arm.sell ? `${sellText} · the gilding is lost` : sellText),
+        ));
+        return wrap;
+      },
     });
   }
 
@@ -1702,7 +1780,7 @@ export class HUD {
     const g = this.game;
     const s = g.s;
     const wrap = h('div', { class: 'farm-panel' });
-    // titles earned (Mabel's album, later the Prettiest Farm ribbons)
+    // titles earned (Mabel's album, the Prettiest Farm ribbons)
     const titles = s.charm?.titles || [];
     if (titles.length) wrap.append(h('div', { class: 'farm-titles' }, titles.map((x) => h('span', { class: 'farm-title' }, `🏅 ${x}`))));
     wrap.append(h('div', { class: 'stats' },
@@ -1796,7 +1874,7 @@ export class HUD {
   treasureTabs() {
     const g = this.game;
     const tabs = [{ id: 'album', label: '📖 Album' }];
-    if (g.features?.charm && g.s.level >= 19 && typeof this.renderRibbons === 'function') tabs.push({ id: 'ribbons', label: '💗 Ribbons' });
+    if (g.charmStatus().unlocked) tabs.push({ id: 'ribbons', label: '💗 Ribbons' });
     tabs.push({ id: 'awards', label: '🏆 Awards' });
     return tabs;
   }
@@ -1805,7 +1883,7 @@ export class HUD {
   treasuresTab() {
     const g = this.game;
     if (g.albumPagesReady().length) return 'album';
-    if (g.features?.charm && g.charmStatus?.()?.ready) return 'ribbons';
+    if (g.charmStatus().ready) return 'ribbons';
     if (g.achievementsReady()) return 'awards';
     return g.albumOpen() ? 'album' : 'awards';
   }
@@ -1820,7 +1898,7 @@ export class HUD {
       tabs,
       tab: tabs.some((t) => t.id === tab) ? tab : this.pickTab('treasures', tabs, this.treasuresTab()),
       live: false, // (it follows the game's events: 'album', 'inventory', … — no 1 Hz rebuild under the finger)
-      render: (t) => (t === 'album' ? this.renderAlbum() : t === 'ribbons' && this.renderRibbons ? this.renderRibbons() : this.renderAchievements()),
+      render: (t) => (t === 'album' ? this.renderAlbum() : t === 'ribbons' ? this.renderRibbons() : this.renderAchievements()),
     });
   }
 
@@ -1838,7 +1916,7 @@ export class HUD {
   albumPrizeText(def) {
     const pr = def.prize || {};
     const g = this.game;
-    const vGems = !g.features?.charm && pr.voucher ? pr.voucher * ALBUM.voucherFallbackGems : 0;
+    const vGems = !g.features?.charm && pr.voucher ? pr.voucher * ALBUM.voucherFallbackGems : 0; // (Prettiest Farm off)
     const parts = [];
     if (pr.gems || vGems) parts.push(`💎${(pr.gems || 0) + vGems}`);
     if (pr.gift && OBJECTS[pr.gift]) parts.push(`${OBJECTS[pr.gift].icon} ${OBJECTS[pr.gift].name}`);
@@ -1904,6 +1982,69 @@ export class HUD {
     return wrap;
   }
 
+  // 💗 Ribbons (§4.5): the charm card (total, rank, a bar to the next one), Claim all, the 30 ranks (scrolled to the
+  // next one when the tab shows), and the ✨ Gilding card from L31 (a teaser before)
+  ribbonRewardText(rw = {}) {
+    const parts = [];
+    if (rw.gems) parts.push(`💎${rw.gems}`);
+    if (rw.gift && OBJECTS[rw.gift]) parts.push(`${OBJECTS[rw.gift].icon} ${OBJECTS[rw.gift].name}`);
+    if (rw.title) parts.push(`🏅 ${rw.title}`);
+    if (rw.rosette) parts.push('🎀 Rosette');
+    return parts;
+  }
+
+  renderRibbons() {
+    const g = this.game;
+    const st = g.charmStatus();
+    const p = this.panel;
+    const wrap = h('div', { class: 'ribbons' });
+    const lo = st.reached ? CHARM.rank(st.reached) : 0;
+    const pct = st.next ? Math.max(0, Math.min(100, ((st.total - lo) / (st.next.need - lo)) * 100)) : 100;
+    wrap.append(h('div', { class: 'rb-head' },
+      h('div', { class: 'rb-top' }, h('b', {}, `💗 Charm ${fmtNum(st.total)}`), h('span', { class: 'rb-rank' }, `🎀 Rank ${st.ranks}`)),
+      h('div', { class: 'slot-bar wide rb-bar' }, h('div', { style: `width:${pct}%` })),
+      h('div', { class: 'muted small' }, st.next
+        ? `Next: rank ${st.next.rank} at 💗${fmtNum(st.next.need)} (${this.ribbonRewardText(st.next.reward).join(' + ')})`
+        : 'Every ribbon is yours — the valley\'s Grand Champion Farm!'),
+      // (in the sticky card, so it stays in reach however far the list scrolls)
+      st.ready ? h('button', { class: 'btn wide claim-all', 'data-guide': 'ribbons:claim', onclick: () => this.ctrl.claimRibbons?.() }, `🎀 Claim all (${st.ready})`) : null,
+    ));
+    wrap.append(h('div', { class: 'rb-rule muted small' }, 'Every decoration adds charm — up to 3 of each kind count, gilded ones triple.'));
+    const head = wrap.firstChild;
+    const list = h('div', { class: 'rb-list' });
+    let next = null;
+    for (let r = 1; r <= CHARM.ranks; r++) {
+      const state = r <= st.ranks ? 'done' : r <= st.reached ? 'ready' : 'locked';
+      const rw = CHARM.rewards[r - 1];
+      const row = h('div', { class: `rb-row ${state}` + (rw.title || rw.gift ? ' big' : '') },
+        h('span', { class: 'rb-badge' }, r),
+        h('div', { class: 'rb-mid' },
+          h('div', { class: 'rb-need' }, `💗 ${fmtNum(CHARM.rank(r))}`),
+          h('div', { class: 'rb-chips' }, this.ribbonRewardText(rw).map((x) => h('span', { class: 'rb-chip' }, x)))),
+        state === 'done' ? h('span', { class: 'rb-state' }, '✓')
+          : state === 'ready' ? h('button', { class: 'btn small', onclick: () => this.ctrl.claimRibbons?.() }, 'Claim')
+            : h('span', { class: 'rb-state muted' }, '🔒'));
+      if (!next && state !== 'done') next = row;
+      list.append(row);
+    }
+    wrap.append(list);
+    // gilding: what it is and the vouchers waiting (from L31; before, what's coming)
+    wrap.append(st.gildUnlocked
+      ? h('div', { class: 'rb-gild' }, h('b', {}, '✨ Gilding'),
+        h('div', { class: 'small' }, 'Make a premium decoration golden — a fountain, gazebo, flower arch, rooster or balloon (and their album recolours): it counts triple 💗. Tap it on your farm → ✨ Gild.'),
+        h('div', { class: 'small' }, `Gilding vouchers: ${st.vouchers}${st.vouchers ? ' — each gilds one piece for free' : ' · Mabel\'s last album pages hold some'}`))
+      : h('div', { class: 'rb-gild locked muted small' }, `✨ Gilding opens at level ${CHARM.gildLevel}: make your finest pieces golden for triple 💗.`));
+    // first showing of the tab: the next rank in view, just under the (sticky) charm card with one claimed rank above
+    if (next && p && p.lastTab !== 'ribbons') {
+      requestAnimationFrame(() => {
+        if (!next.isConnected) return;
+        const b = p.body.getBoundingClientRect(), r = next.getBoundingClientRect();
+        p.body.scrollTop += Math.max(0, r.top - b.top - head.getBoundingClientRect().height - r.height - 24);
+      });
+    }
+    return wrap;
+  }
+
   renderAchievements() {
     const g = this.game;
     const list = h('div', { class: 'achievements' });
@@ -1933,7 +2074,10 @@ export class HUD {
     const hints = s.settings.hints ?? 'full';
     const tapHarvest = s.settings.tapHarvest !== false;
     const guided = s.tutorial?.mode === 'guided' && this.hasHook('onSkipTour');
+    const titles = s.charm?.titles || [];
     return h('div', { class: 'farm-panel' },
+      // the farm's titles (Mabel's album, Mayor Hank's ribbons)
+      titles.length ? h('div', { class: 'farm-titles' }, titles.map((x) => h('span', { class: 'farm-title' }, `🏅 ${x}`))) : null,
       h('div', { class: 'settings' },
         toggle('🔊 Sound effects', s.settings.sound, () => { s.settings.sound = !s.settings.sound; this.audio.setSfx(s.settings.sound); g.saveSoon(); this.refreshPanel(); }),
         toggle('🎵 Music', s.settings.music, () => { s.settings.music = !s.settings.music; this.audio.setMusic(s.settings.music); g.saveSoon(); this.refreshPanel(); }),

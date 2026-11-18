@@ -1195,6 +1195,13 @@ export const EXTRA_TIPS = [
     when: (g, ctx) => !!ctx.cameraTipDue || g.now() - (g.s.createdAt || 0) >= FARM_AGE_TIP,
     onTap: (guide) => { guide.hud.openCamPad?.(); guide.hud.pulseCamBtn?.(); },
   },
+  {
+    // Prettiest Farm (L19): the first ribbon rank to collect
+    key: 'tip:ribbons',
+    text: 'Mayor Hank says your farm is charming, dear — collect your ribbons in 🏆! 🎀',
+    when: (g) => g.s.level >= 19 && !!g.charmStatus?.()?.ready,
+    onTap: (guide) => guide.hud.openTreasures?.('ribbons'),
+  },
 ];
 
 // the album's first find (the earliest in s.album.have), for tip:album
@@ -1443,7 +1450,7 @@ function finish(g, ui, s) {
 const EVENTS = ['coins', 'gems', 'xp', 'levelup', 'inventory', 'soil', 'objectAdded', 'objectRemoved', 'objectMoved', 'animalAdded', 'animalChanged',
   'factoryChanged', 'treeChanged', 'orders', 'orderDone', 'visitors', 'visitorServed', 'quest', 'questComplete', 'chores', 'daily', 'land',
   'storageUpgraded', 'tutorial', 'reveal', 'gifts', 'chapter', 'debrisCleared', 'wagon', 'drop', 'safetyNet', 'project',
-  'post', 'postReady', 'keepsake', 'album', 'charm'];
+  'post', 'postReady', 'keepsake', 'album', 'charm', 'ribbons', 'gild', 'objectChanged'];
 const memo = new WeakMap();
 
 function memoFor(game) {

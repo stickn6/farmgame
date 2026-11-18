@@ -10,7 +10,7 @@ import { FarmView, ObjectView, AnimalView, DogView, VisitorView, WagonView, Proj
 import { Effects } from './game/effects.js';
 import { Audio } from './game/audio.js';
 import { Input } from './game/input.js';
-import { HUD, fmtTime, postClock } from './ui/hud.js';
+import { HUD, fmtTime, fmtNum, postClock } from './ui/hud.js';
 import { Bubbles } from './ui/bubbles.js';
 import { GuideController } from './ui/guide-ui.js';
 import './game/models/index.js';
@@ -285,7 +285,8 @@ class Controller {
         if (o && isTap) {
           const kind = OBJECTS[o.type].kind;
           // free decor (a chapter gift, the starter flowers) refunds nothing: ask in its panel instead of one tap
-          if (kind === 'decor') { if (o.free) { this.paint = null; this.hud.openDecor(o); } else this.removeObject(o); }
+          // (a gilded piece too: its gilding is never refunded, so selling it waits for its panel's second tap)
+          if (kind === 'decor') { if (o.free || o.gilded) { this.paint = null; this.hud.openDecor(o); } else this.removeObject(o); }
           else if (kind === 'tree') {
             if (g.treeState(o) === 'dead') this.removeObject(o);
             else { this.paint = null; this.hud.openTree(o); } // ask in-game, never with a blocking dialog mid-gesture
@@ -751,6 +752,46 @@ class Controller {
     return r;
   }
 
+  // Treasures → 💗 Ribbons → Claim all: the model pays every reached rank. Gems fly to the 💎 pill; a rank with a
+  // decoration or a title (5, 10, 15, …) closes the panel and opens its chest, then the decoration goes up.
+  claimRibbons() {
+    const list = this.game.claimRibbons();
+    if (!list.length) return list;
+    const gems = list.reduce((n, r) => n + r.gems, 0);
+    const big = list.some((r) => r.gift || r.title);
+    this.audio.play(big ? 'levelup' : 'quest');
+    const src = this.hud.panel?.el?.querySelector?.('[data-guide="ribbons:claim"]')?.getBoundingClientRect?.();
+    const cx = src ? src.left + src.width / 2 : window.innerWidth / 2, cy = src ? src.top + src.height / 2 : window.innerHeight / 2;
+    if (big) {
+      this.hud.closePanel();
+      this.guide.ribbonPrize(list);
+    } else {
+      for (let i = 0; i < Math.min(4, gems); i++) this.effects.flyFrom(cx, cy, '💎', this.hud.gemsPill, { delay: i * 90 });
+      const top = list[list.length - 1].rank;
+      this.hud.toast(`🎀 Ribbon ${list.length > 1 ? `ranks ${list[0].rank}–${top}` : `rank ${top}`}! +💎${gems}`, 'good');
+    }
+    this.hud.refreshBadges();
+    this.hud.refreshLevelStar?.();
+    return list;
+  }
+
+  // ✨ Gild (the decor panel): coins + gems, or a voucher. The view re-adds it in gold (objectChanged); a sparkle
+  // and the charm it gained float up.
+  gild(o, opts = {}) {
+    const g = this.game;
+    const before = g.charm().of(o);
+    const r = g.gild(o, opts);
+    if (!r) return null;
+    this.audio.play('levelup');
+    const pos = objectCenter(g, r.o);
+    this.effects.burst(pos.clone().setY(pos.y + 0.6), ['#ffd54a', '#fff3b0', '#ffffff', '#ffb000'], 24, 1.2);
+    const gained = g.charm().of(r.o) - before;
+    this.effects.floatText(pos.clone().setY(pos.y + 1.8), gained > 0 ? `✨ +💗${fmtNum(gained)}` : '✨', 'info');
+    this.hud.toast(`✨ ${OBJECTS[r.o.type].name} is gilded!${gained > 0 ? ` +💗${fmtNum(gained)} charm` : ''}`, 'good');
+    this.hud.refreshBadges();
+    return r;
+  }
+
   claimQuest() {
     const q = this.game.claimQuest();
     if (!q) return;
@@ -843,14 +884,18 @@ class Controller {
       this.finishPlacement();
       return;
     }
+    const charm0 = g.charmStatus().unlocked ? g.charm().total : null;
     const o = p.gift ? g.placeGift(p.type, p.x, p.z, p.rot) : g.placeObject(p.type, p.x, p.z, p.rot);
     if (!o) return;
     this.audio.play('build');
     const pos = objectCenter(g, o);
     const [w, d] = g.objSize(o.type, o.rot);
     this.effects.burst(pos, ['#d9c27a', '#ffffff', '#a87447'], 10 + w * d, 1.2);
-    if (p.gift) this.effects.floatText(pos.setY(1.5), '🎁');
-    else this.effects.floatText(pos.setY(1.5), `-🪙${g.lastPlaceCost ?? OBJECTS[o.type].cost}`, 'cost');
+    if (p.gift) this.effects.floatText(pos.clone().setY(1.5), '🎁');
+    else this.effects.floatText(pos.clone().setY(1.5), `-🪙${g.lastPlaceCost ?? OBJECTS[o.type].cost}`, 'cost');
+    // Prettiest Farm (L19): the charm it added floats up too
+    const gained = charm0 == null ? 0 : g.charm().total - charm0;
+    if (gained > 0) this.effects.floatText(pos.clone().setY(2.3), `+💗${fmtNum(gained)}`, 'info');
     // cheap decor: keep placing for quick fences/paths, otherwise exit
     if (!p.gift && OBJECTS[p.type].kind === 'decor' && g.s.coins >= OBJECTS[p.type].cost) {
       this.updateGhost();

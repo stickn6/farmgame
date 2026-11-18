@@ -524,6 +524,9 @@ export function unlocksAtLevel(level) {
   if (DROPS.minLevel === level) list.push({ icon: '🧰', name: 'Building materials' });
   // Mabel's album: a new page (page 1 opens with the first keepsake, not at a level)
   for (const p of ALBUM.pages) if (p.level > 0 && p.level === level) list.push({ icon: '📖', name: `Album page: ${p.name}` });
+  // Prettiest Farm: Mayor Hank's ribbons, then gilding
+  if (CHARM.level === level) list.push({ icon: '💗', name: 'Prettiest Farm ribbons' });
+  if (CHARM.gildLevel === level) list.push({ icon: '✨', name: 'Gilding' });
   return list;
 }
 
@@ -737,7 +740,7 @@ export const FEATURE_TIPS = {
   16: 'The Old Bridge needs help — donate coins and goods in stages.',
   17: 'Pumpkins take an hour — perfect before you log off.',
   18: 'The Candle Shop turns honey into candles.',
-  19: 'Cotton becomes shirts at the Loom.',
+  19: 'Cotton for shirts — and Mayor Hank\'s ribbons: decorations now earn 💗 charm!',
   20: 'Goats give rich milk — they eat sunflowers.',
   21: 'The Bandstand project is open — finish it for better wagon pay.',
   22: 'Chili makes Spicy Popcorn. Another production slot is available too!',
@@ -749,7 +752,8 @@ export const FEATURE_TIPS = {
   28: 'Caramel Corn — corn has never been so fancy.',
   29: 'Cozy Quilts need a shirt and a sweater — the ultimate gift.',
   30: 'The Master Farmhouse project is open. You\'re a true farmer, dear!',
-  // past L30: the last album pages (31 is shared with gilding, added with Prettiest Farm)
+  // past L30: the last album pages (31 is shared with gilding)
+  31: 'Gilding! Make a fountain or gazebo golden for triple 💗 — and a new album page.',
   35: 'A new album page: Starry Nights 🔭 — keepsakes turn up as you farm.',
   37: 'A new album page: Festival Keepsakes 🎠 — fill it for a gilding voucher!',
   39: 'The last album page: Grand Champion 🥇 — fill it to become Valley Historian!',
@@ -858,6 +862,36 @@ export const ALBUM = {
 // 'meadow:clover' → { id, page, item, icon, name }
 export const KEEPSAKES = {};
 for (const p of ALBUM.pages) for (const [item, icon, name] of p.items) KEEPSAKES[`${p.id}:${item}`] = { id: `${p.id}:${item}`, page: p.id, item, icon, name };
+
+// ---------------------------------------------------------------- Prettiest Farm: 💗 charm, ribbons and gilding
+// Mayor Hank's contest (from L19). Every placed decoration adds charm (derived, never stored): up to 3 of each kind
+// count, a gilded copy triple. 30 finite ranks pay gems, two exclusive decorations and titles — never XP, coins
+// production or materials (every reward goes through Game.grant('charm')). From L31 a premium piece (base price
+// ≥ 🪙1,500) can be gilded with coins + gems or a voucher from the album: the late-game coin and gem sink.
+export const CHARM = {
+  level: 19, gildLevel: 31, perKind: 3, gildMult: 3, gildMin: 1500,
+  // a decoration's charm: its own value (the exclusives), else 4·√price
+  of: (type) => {
+    const d = OBJECTS[type];
+    return d?.kind === 'decor' ? (d.charm ?? Math.round(4 * Math.sqrt(d.cost || 0))) : 0;
+  },
+  // 💗 needed for rank r: round10(60r + 16r²) → 80, 180, 320 … 16,200
+  rank: (r) => Math.round((60 * r + 16 * r * r) / 10) * 10, ranks: 30,
+  // r1..r30: 124 gems in all, Blossom Oak at 5, Frosted Pine at 15, titles at 5/10/15/20/25/30, the rosette at 10
+  rewards: [
+    { gems: 2 }, { gems: 2 }, { gems: 2 }, { gems: 3 }, { gift: 'blossomoak', title: 'Charming Farm' },
+    { gems: 3 }, { gems: 3 }, { gems: 3 }, { gems: 4 }, { gems: 5, title: 'Prize Farm', rosette: true },
+    { gems: 4 }, { gems: 4 }, { gems: 4 }, { gems: 4 }, { gift: 'frostpine', title: 'Blue Ribbon Farm' },
+    { gems: 4 }, { gems: 4 }, { gems: 4 }, { gems: 4 }, { gems: 6, title: 'Valley Showpiece' },
+    { gems: 4 }, { gems: 4 }, { gems: 4 }, { gems: 4 }, { gems: 8, title: 'Pride of the Valley' },
+    { gems: 5 }, { gems: 5 }, { gems: 5 }, { gems: 5 }, { gems: 15, title: 'Grand Champion Farm' },
+  ],
+  rosetteRank: 10,
+  // gilding: the price of the piece it is (or recolours), e.g. the Mossy Fountain's is the Fountain's 🪙4,000
+  gildBase: (type) => { const d = OBJECTS[type]; return d?.kind === 'decor' ? (OBJECTS[d.model]?.cost ?? d.cost ?? 0) : 0; },
+  gildCost: (base) => ({ coins: 2 * base, gems: Math.ceil(Math.pow(base, 0.3)) }),
+  gold: GOLD, // shared with the golden exclusives (one tint path)
+};
 
 // Levels where future content can slot in without rebalancing (keep these in mind when adding features).
 // 31/35/37/39 hold album pages (31 also gilding). Planned next: seasons 32, map 33, fishing 34, kitchen 36,

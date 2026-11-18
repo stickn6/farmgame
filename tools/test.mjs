@@ -1670,7 +1670,7 @@ test('save round-trip: post, album, charm, rng and settings.cam', () => {
 // ---------------------------------------------------------------- Mabel's Keepsake Album (§3)
 const pageIds = (id) => CFG.ALBUM.pages.find((p) => p.id === id).items.map(([it]) => `${id}:${it}`);
 const fillPage = (g, id) => { for (const k of pageIds(id)) g.s.album.have[k] ||= 1; g.s.album.open = true; };
-const albumAt = (L) => { const g = fresh(); g.s.level = L; g.s.xp = CFG.xpForLevel(L); return g; };
+const albumAt = (L, features) => { const g = features ? new Game({ clock, storage: null, features }) : fresh(); g.s.level = L; g.s.xp = CFG.xpForLevel(L); return g; };
 const mats = (g) => Object.entries(g.s.inventory).filter(([i]) => CFG.ITEMS[i].cat === 'material').reduce((n, [, k]) => n + k, 0);
 
 test('album: closed → no rolls; the first keepsake opens it; level 8 primes it so the first action finds one', () => {
@@ -1836,7 +1836,8 @@ test('album: no duplicates over 2,000 finds; locked pages stay empty; every page
 });
 
 test('album: a page pays once (gems + its decoration to place); the launch album after page 8; the all-12 title; vouchers', () => {
-  const g = albumAt(45);
+  // (Prettiest Farm off: the vouchers of pages 10–12 are paid as 💎15 each; with it on — the default — they are kept)
+  const g = albumAt(45, { charm: false });
   g.s.album.open = true;
   const pages = [];
   g.on('albumPage', (r) => pages.push(r));
@@ -1893,8 +1894,8 @@ test('album: a page pays once (gems + its decoration to place); the launch album
   assert.equal(levelups, 0);
   assert.equal(g.granted.album.xp, 0);
   assert.equal(g.granted.album.materials, 0);
-  // with Prettiest Farm on, a voucher is kept for gilding instead
-  const c = new Game({ clock, storage: null, features: { charm: true } });
+  // with Prettiest Farm on (the default), a voucher is kept for gilding instead
+  const c = fresh();
   c.s.level = 45;
   fillPage(c, 'stars');
   const cg = c.s.gems;
@@ -2021,6 +2022,239 @@ test('album RNG: Math.random is never used by rolls, parcels or claims; the same
   const b = run();
   assert.ok(a.filter(Boolean).length > 10);
   assert.deepEqual(a, b);
+});
+
+// ---------------------------------------------------------------- Prettiest Farm: 💗 charm, ribbons, gilding (§4)
+// a farm at level L with no decorations at all (the starter oaks, pine, flowers and bush removed)
+const bareAt = (L, features) => {
+  const g = albumAt(L, features);
+  g.s.objects = g.s.objects.filter((o) => CFG.OBJECTS[o.type].kind !== 'decor');
+  g.rebuildOccupancy();
+  return g;
+};
+// place a shop decoration (paid), or an exclusive through the gift flow
+const putDecor = (g, type) => {
+  const d = CFG.OBJECTS[type];
+  const spot = g.findFreeSpot(type);
+  assert.ok(spot, `room for ${type}`);
+  if (d.level >= 99) { g.s.gifts.push(type); return g.placeGift(type, spot[0], spot[1], 0); }
+  g.s.coins += d.cost;
+  const lvl = g.s.level;
+  g.s.level = Math.max(lvl, d.level);
+  const o = g.placeObject(type, spot[0], spot[1], 0);
+  g.s.level = lvl;
+  assert.ok(o, `placed ${type}`);
+  return o;
+};
+
+test('charm: charmOf values; up to 3 of each kind count (gilded first, ×3); gifts never count; memo follows add / remove / change', () => {
+  const want = { path: 6, fence: 8, bush: 11, hay: 13, flowers: 14, oak: 15, pine: 18, bench: 22, lamp: 24, scarecrow: 25, well: 44, birdbath: 49,
+    picnic: 75, windmill: 98, flowerarch: 155, fountain: 253, gazebo: 379, statue: 566, balloon: 800 };
+  for (const [type, v] of Object.entries(want)) assert.equal(CFG.CHARM.of(type), v, type);
+  for (const [type, d] of Object.entries(CFG.OBJECTS)) if (d.kind === 'decor' && d.charm != null) assert.equal(CFG.CHARM.of(type), d.charm, type);
+  for (const type of ['coop', 'farmhouse', 'appletree', 'weed', 'nope']) assert.equal(CFG.CHARM.of(type), 0, type);
+  // a new farm's starter decor: 2 oaks, a pine, 2 flower beds and a bush
+  assert.equal(fresh().charm().total, 15 * 2 + 18 + 14 * 2 + 11);
+  const g = bareAt(25);
+  assert.equal(g.charm().total, 0);
+  let events = [];
+  g.on('charm', (e) => events.push(e.total));
+  const f = [1, 2, 3, 4].map(() => putDecor(g, 'fence'));
+  assert.equal(g.charm().total, 3 * 8, 'only 3 fences count');
+  assert.deepEqual(events, [8, 16, 24], "'charm' goes out when the total moves (not for the 4th fence)");
+  assert.deepEqual(g.charm().kinds.fence, { placed: 4, counted: 3, gilded: 0 });
+  assert.equal(g.charm().of(f[0]), 8);
+  assert.equal(g.charm().of(f[3]), 0, 'the 4th one is just for looks');
+  // memoised: the same object until something is placed, removed or changed
+  const m = g.charm();
+  assert.equal(g.charm(), m);
+  g.removeObject(f[0].id);
+  assert.notEqual(g.charm(), m);
+  assert.equal(g.charm().total, 24, 'the 4th takes the sold one\'s place');
+  // gifts waiting in Shop → Decor never count; placed exclusives count their own value
+  g.s.gifts.push('blossomoak', 'mossfountain');
+  assert.equal(g.charm().total, 24);
+  g.s.gifts = [];
+  putDecor(g, 'mossfountain');
+  assert.equal(g.charm().total, 24 + 300);
+  // gilded copies count first, and triple: 4 fountains, the newest gilded
+  const h = bareAt(31);
+  const fs = [1, 2, 3, 4].map(() => putDecor(h, 'fountain'));
+  assert.equal(h.charm().total, 3 * 253);
+  h.s.coins = 1e6; h.s.gems = 1000;
+  assert.ok(h.gild(fs[3]));
+  assert.equal(h.charm().total, 253 * 3 + 2 * 253, 'the gilded one (×3) and the two oldest');
+  assert.equal(h.charm().of(fs[3]), 759);
+  assert.equal(h.charm().of(fs[2]), 0);
+  assert.deepEqual(h.charm().kinds.fountain, { placed: 4, counted: 3, gilded: 1 });
+  // the T(r) table and the rewards (124 gems, 2 decorations, 6 titles, the rosette at 10)
+  assert.deepEqual(Array.from({ length: 30 }, (_, i) => CFG.CHARM.rank(i + 1)), [80, 180, 320, 500, 700, 940, 1200, 1500, 1840, 2200, 2600, 3020, 3480, 3980, 4500,
+    5060, 5640, 6260, 6920, 7600, 8320, 9060, 9840, 10660, 11500, 12380, 13280, 14220, 15200, 16200]);
+  const R = CFG.CHARM.rewards;
+  assert.equal(R.length, 30);
+  assert.equal(R.reduce((n, r) => n + (r.gems || 0), 0), 124);
+  assert.deepEqual(R.map((r, i) => (r.gift ? `${i + 1}:${r.gift}` : null)).filter(Boolean), ['5:blossomoak', '15:frostpine']);
+  assert.deepEqual(R.map((r) => r.title).filter(Boolean), ['Charming Farm', 'Prize Farm', 'Blue Ribbon Farm', 'Valley Showpiece', 'Pride of the Valley', 'Grand Champion Farm']);
+  assert.deepEqual(R.map((r, i) => (r.rosette ? i + 1 : 0)).filter(Boolean), [10]);
+  for (const r of R) for (const k of Object.keys(r)) assert.ok(['gems', 'gift', 'title', 'rosette'].includes(k), `no ${k} reward`);
+  for (const r of R) if (r.gift) assert.ok(CFG.OBJECTS[r.gift].level === 99 && CFG.OBJECTS[r.gift].cost === 0, r.gift);
+});
+
+test('ribbons: from L19; claim all pays every reached rank once through grant(); ranks stay after removal; no XP, coins or materials', () => {
+  const g = bareAt(18);
+  const gz = putDecor(g, 'gazebo'), ft = putDecor(g, 'fountain'); // 379 + 253 = 632 → rank 4 reached
+  putDecor(g, 'birdbath'); putDecor(g, 'oak'); // + 49 + 15 = 696
+  assert.equal(g.charm().total, 696);
+  let st = g.charmStatus();
+  assert.deepEqual([st.unlocked, st.reached, st.ready], [false, 4, 0], 'level 18: not yet');
+  assert.deepEqual(g.claimRibbons(), []);
+  g.s.level = 19;
+  st = g.charmStatus();
+  assert.deepEqual([st.unlocked, st.total, st.ranks, st.reached, st.ready, st.next.rank, st.next.need], [true, 696, 0, 4, 4, 5, 700]);
+  assert.deepEqual(st.next.reward, { gift: 'blossomoak', title: 'Charming Farm' });
+  const xp0 = g.s.xp, gems0 = g.s.gems, m0 = mats(g);
+  let lv = 0, rib = [];
+  g.on('levelup', () => lv++);
+  g.on('ribbons', (e) => rib.push(e.ranks.map((r) => r.rank)));
+  const got = g.claimRibbons();
+  assert.deepEqual(got.map((r) => r.rank), [1, 2, 3, 4]);
+  assert.deepEqual(got.map((r) => r.gems), [2, 2, 2, 3]);
+  assert.equal(g.s.gems, gems0 + 9);
+  assert.equal(g.s.charm.ranks, 4);
+  assert.deepEqual(rib, [[1, 2, 3, 4]]);
+  assert.deepEqual(g.claimRibbons(), [], 'once');
+  // one more flower bed: rank 5 — the Blossom Oak (to Shop → Decor 🎁) and "Charming Farm"
+  putDecor(g, 'flowers');
+  assert.equal(g.charmStatus().ready, 1);
+  const r5 = g.claimRibbons();
+  assert.deepEqual(r5.map((r) => [r.rank, r.gems, r.gift, r.title, r.rosette]), [[5, 0, 'blossomoak', 'Charming Farm', false]]);
+  assert.ok(r5[0].tiles.some((t) => t.kind === 'gift' && t.type === 'blossomoak' && t.place));
+  assert.deepEqual(g.s.gifts, ['blossomoak']);
+  assert.ok(g.s.charm.titles.includes('Charming Farm'));
+  assert.equal(g.granted.charm.gems, 9);
+  assert.equal(g.granted.charm.gifts, 1);
+  // ranks never go back: sell the gazebo and the fountain, charm drops, rank 5 stays claimed
+  g.removeObject(gz.id); g.removeObject(ft.id);
+  st = g.charmStatus();
+  assert.ok(st.total < 700 && st.ranks === 5 && st.ready === 0);
+  assert.equal(st.next.rank, 6, 'the next rank to reach is past the claimed ones');
+  putDecor(g, 'gazebo'); putDecor(g, 'fountain');
+  assert.equal(g.charmStatus().ready, 0, 'reaching a claimed rank again pays nothing');
+  // no XP, no coins, no materials, no level-up from any rank
+  assert.equal(g.s.xp, xp0);
+  assert.equal(mats(g), m0);
+  assert.equal(lv, 0);
+  assert.equal(g.granted.charm.coins + g.granted.charm.xp + g.granted.charm.materials, 0);
+  // every rank: 124 gems, both decorations, 6 titles, the rosette from 10 — all 30 on a fully decorated, gilded farm
+  const all = bareAt(45);
+  for (const type of ['flowerarch', 'fountain', 'gazebo', 'statue', 'balloon']) for (let i = 0; i < 3; i++) all.s.objects.push({ id: all.s.nextId++, type, x: -50, z: -50 - i, rot: 0, jobs: [], gilded: true });
+  for (const type of ['mossfountain', 'lilacgazebo', 'silverrooster', 'skyballoon', 'blossomarch']) all.s.objects.push({ id: all.s.nextId++, type, x: -60, z: -60, rot: 0, jobs: [], free: true, gilded: true });
+  all.rebuildOccupancy();
+  assert.ok(all.charm().total >= CFG.CHARM.rank(30), `${all.charm().total}`);
+  const gemsA = all.s.gems, xpA = all.s.xp;
+  const list = all.claimRibbons();
+  assert.equal(list.length, 30);
+  assert.equal(all.s.gems - gemsA, 124);
+  assert.deepEqual(all.s.gifts, ['blossomoak', 'frostpine']);
+  assert.equal(all.s.charm.titles.length, 6);
+  assert.ok(all.charmStatus().rosette && all.charmStatus().next === null);
+  assert.equal(all.s.xp, xpA);
+  assert.deepEqual(all.claimRibbons(), []);
+  // the rosette needs rank 10 claimed
+  assert.equal(g.charmStatus().rosette, false);
+  // Prettiest Farm off: nothing to claim, nothing to gild
+  const off = bareAt(45, { charm: false });
+  putDecor(off, 'gazebo');
+  off.s.charm.vouchers = 3;
+  assert.deepEqual([off.charmStatus().unlocked, off.charmStatus().ready], [false, 0]);
+  assert.deepEqual(off.claimRibbons(), []);
+  const ofs = putDecor(off, 'fountain');
+  assert.equal(off.gildCost(ofs), null);
+  assert.equal(off.gild(ofs, { voucher: true }), null);
+  assert.equal(off.s.charm.vouchers, 3);
+});
+
+test('gilding: L31, a base price ≥ 🪙1,500; coins + gems or a voucher; gold ×3 via objectChanged; selling refunds half the price only', () => {
+  const g = bareAt(30);
+  const ft = putDecor(g, 'fountain'), well = putDecor(g, 'well'), arch = putDecor(g, 'flowerarch');
+  const moss = putDecor(g, 'mossfountain'), gs = putDecor(g, 'goldscarecrow'), cur = putDecor(g, 'curio'), oak = putDecor(g, 'blossomoak');
+  g.s.coins = 100000; g.s.gems = 200;
+  assert.equal(g.gildCost(ft), null, 'not before level 31');
+  assert.equal(g.gild(ft), null);
+  g.s.level = 31;
+  assert.equal(g.charmStatus().gildUnlocked, true);
+  assert.deepEqual(g.gildCost(ft), { coins: 8000, gems: 13, base: 4000, voucher: false });
+  assert.deepEqual(g.gildCost(arch), { coins: 3000, gems: 9, base: 1500, voucher: false });
+  assert.deepEqual(g.gildCost(moss), { coins: 8000, gems: 13, base: 4000, voucher: false }, 'a recolour costs what its model does');
+  for (const o of [well, gs, cur, oak]) assert.equal(g.gildCost(o), null, o.type);
+  // the spec's table: base → coins, gems
+  const table = { flowerarch: [3000, 9], fountain: [8000, 13], gazebo: [18000, 16], statue: [40000, 20], balloon: [80000, 25],
+    blossomarch: [3000, 9], mossfountain: [8000, 13], lilacgazebo: [18000, 16], silverrooster: [40000, 20], skyballoon: [80000, 25] };
+  for (const [type, [c, gm]] of Object.entries(table)) assert.deepEqual(CFG.CHARM.gildCost(CFG.CHARM.gildBase(type)), { coins: c, gems: gm }, type);
+  // coins + gems
+  const changed = [], gilds = [];
+  g.on('objectChanged', (o) => changed.push(o.id));
+  g.on('gild', (r) => gilds.push(r));
+  const before = g.charm().total, c0 = g.s.coins, gm0 = g.s.gems, xp0 = g.s.xp;
+  const r = g.gild(ft.id);
+  assert.ok(r && r.o === ft && !r.voucher && r.coins === 8000 && r.gems === 13);
+  assert.equal(ft.gilded, true);
+  assert.equal(g.s.coins, c0 - 8000);
+  assert.equal(g.s.gems, gm0 - 13);
+  assert.equal(g.s.xp, xp0, 'no XP');
+  assert.deepEqual(changed, [ft.id]);
+  assert.equal(gilds.length, 1);
+  assert.equal(g.charm().total, before + 2 * 253, 'triple');
+  assert.equal(g.gildCost(ft), null, 'once');
+  assert.equal(g.gild(ft), null);
+  // not enough coins or gems: nothing happens
+  g.s.coins = 100;
+  assert.equal(g.gild(arch), null);
+  assert.ok(!arch.gilded && g.s.coins === 100);
+  g.s.coins = 100000; g.s.gems = 0;
+  assert.equal(g.gild(arch), null);
+  assert.ok(!arch.gilded && g.s.coins === 100000);
+  // a voucher (from Mabel's last album pages) pays instead
+  g.s.charm.vouchers = 1;
+  assert.equal(g.gildCost(arch).voucher, true);
+  const vr = g.gild(arch, { voucher: true });
+  assert.ok(vr && vr.voucher && arch.gilded);
+  assert.deepEqual([g.s.coins, g.s.gems, g.s.charm.vouchers], [100000, 0, 0]);
+  assert.equal(g.gild(moss, { voucher: true }), null, 'no voucher left');
+  assert.ok(!moss.gilded);
+  // selling: half the normal price, never the gilding; a free (gift) one refunds nothing
+  g.s.gems = 50;
+  assert.ok(g.gild(moss));
+  assert.equal(g.removeObject(ft.id), 2000);
+  assert.equal(g.removeObject(moss.id), 0);
+  // a gilded piece survives a save round-trip (and so does its charm)
+  const st = new MemStorage();
+  const sv = new Game({ clock, storage: st });
+  sv.s.level = 31; sv.s.coins = 1e5; sv.s.gems = 100;
+  const sf = putDecor(sv, 'fountain');
+  sv.gild(sf);
+  sv.save();
+  const back = new Game({ clock, storage: st });
+  assert.equal(back.s.objects.find((o) => o.id === sf.id).gilded, true);
+  assert.equal(back.charm().total, sv.charm().total);
+});
+
+test('charm RNG and faucets: claimRibbons and gild never touch Math.random; FEATURE_TIPS 19 and 31; unlocks at 19 and 31', () => {
+  const g = bareAt(31);
+  for (const type of ['gazebo', 'fountain', 'statue']) putDecor(g, type);
+  g.s.coins = 1e5; g.s.gems = 100;
+  const orig = Math.random;
+  Math.random = () => { throw new Error('Math.random used'); };
+  try {
+    assert.ok(g.claimRibbons().length > 0);
+    assert.ok(g.gild(g.s.objects.find((o) => o.type === 'fountain')));
+  } finally { Math.random = orig; }
+  assert.ok(CFG.unlocksAtLevel(19).some((u) => u.icon === '💗' && u.name === 'Prettiest Farm ribbons'));
+  assert.ok(CFG.unlocksAtLevel(31).some((u) => u.icon === '✨' && u.name === 'Gilding'));
+  for (const L of [19, 31]) assert.ok(CFG.FEATURE_TIPS[L] && chars(CFG.FEATURE_TIPS[L]) <= 80, `tip ${L}`);
+  assert.ok(CFG.FEATURE_TIPS[19].includes('💗') && CFG.FEATURE_TIPS[31].startsWith('Gilding!'));
+  // gilding shares the golden exclusives' tint
+  assert.equal(CFG.CHARM.gold, CFG.GOLD);
 });
 
 let pass = 0, fail = 0;

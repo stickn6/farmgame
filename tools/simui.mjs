@@ -82,7 +82,7 @@ export class SimUI {
   treasuresTab() {
     const g = this.g;
     if (g.albumPagesReady().length) return 'album';
-    if (g.features?.charm && g.charmStatus?.()?.ready) return 'ribbons';
+    if (g.charmStatus().ready) return 'ribbons';
     if (g.achievementsReady()) return 'awards';
     return g.albumOpen() ? 'album' : 'awards';
   }
@@ -254,7 +254,18 @@ export class SimUI {
           this.enqueue('chest');
         } else sec = 0; // ‹ › and the page dots only browse
         break;
-      case 'ribbons': if (b === 'claim') g.claimRibbons?.(); break;
+      case 'ribbons':
+        // Claim all: paid now; a rank with a decoration or a title closes the panel for its chest, then the
+        // Blossom Oak / Frosted Pine goes up (main.js claimRibbons)
+        if (b === 'claim') {
+          const list = g.claimRibbons();
+          if (list.some((r) => r.gift || r.title)) {
+            this.closePanel();
+            this.albumGifts.push(...list.map((r) => r.gift).filter(Boolean));
+            this.enqueue('chest');
+          }
+        }
+        break;
       case 'shop':
       case 'storage':
       case 'orders':

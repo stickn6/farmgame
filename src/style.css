@@ -813,11 +813,57 @@ button { font-family: inherit; color: inherit; cursor: pointer; border: none; ba
 .prize-chest .lu-item.title { background: linear-gradient(#fff, #ffe9a8); }
 .farm-titles { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; }
 .farm-title { background: linear-gradient(#fff6c9, #ffe9a8); border-radius: 10px; padding: 3px 10px; font-weight: 700; font-size: 13px; color: var(--wood-dark); box-shadow: 0 2px 0 #e3d3ad; }
+/* ---------------------------------------------------------------- Prettiest Farm: rosette, ribbons, decor panel, gilding */
+.level-box { position: relative; }
+.lvl-rosette {
+  position: absolute; left: 30px; top: 28px; z-index: 3; font-size: 19px; line-height: 1; pointer-events: none;
+  filter: drop-shadow(0 1px 1px rgba(0,0,0,.35)); transform: rotate(-12deg);
+}
+.ribbons { display: flex; flex-direction: column; gap: 10px; }
+/* the charm card stays in view while the 30 ranks scroll under it */
+.rb-head { background: linear-gradient(#fff, #fff1f6); border-radius: 16px; padding: 10px 12px; box-shadow: 0 3px 0 #ecc9d6; position: sticky; top: -12px; z-index: 2; } /* (-12: flush with the panel body's top, over its padding) */
+.rb-top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; font-size: 17px; }
+.rb-rank { font-weight: 700; color: #b0336a; background: #ffe0ec; border-radius: 10px; padding: 1px 9px; font-size: 14px; white-space: nowrap; }
+.rb-bar div { background: linear-gradient(90deg, #ff8fb8, #ff5c9a); }
+.rb-rule { text-align: center; line-height: 1.3; }
+.claim-all { margin-top: 8px; animation: claimGlow 1.4s ease-in-out infinite; }
+@keyframes claimGlow { 50% { box-shadow: 0 4px 0 var(--green-dark), 0 0 0 5px rgba(120, 214, 85, .45); } }
+.rb-list { display: flex; flex-direction: column; gap: 6px; }
+.rb-row { display: flex; align-items: center; gap: 10px; background: #fff; border-radius: 14px; padding: 6px 10px; box-shadow: 0 3px 0 #e3d3ad; min-height: 48px; }
+.rb-row.done { opacity: .7; }
+.rb-row.ready { background: #f1ffe8; border: 2px solid var(--green); }
+.rb-row.locked { background: rgba(255, 255, 255, .6); box-shadow: none; }
+.rb-badge {
+  width: 32px; height: 32px; flex-shrink: 0; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 14px;
+  color: #fff; background: radial-gradient(circle at 35% 30%, #ff9cc2, #e2457f); box-shadow: 0 2px 0 #b0336a;
+}
+.rb-row.big .rb-badge { background: radial-gradient(circle at 35% 30%, #fff1a0, var(--gold) 55%, #e5a400); color: #7a4a00; box-shadow: 0 2px 0 #b98200; }
+.rb-row.locked .rb-badge { filter: grayscale(.7); opacity: .7; }
+.rb-mid { flex: 1; min-width: 0; }
+.rb-need { font-weight: 700; font-size: 14px; }
+.rb-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 2px; }
+.rb-chip { font-size: 12px; font-weight: 600; background: var(--cream-2); border-radius: 8px; padding: 1px 7px; }
+.rb-state { font-weight: 700; font-size: 16px; width: 28px; text-align: center; flex-shrink: 0; }
+.rb-gild { background: linear-gradient(#fffbe6, #ffefb0); border-radius: 14px; padding: 10px 12px; box-shadow: 0 3px 0 #e8cf7a; display: flex; flex-direction: column; gap: 4px; line-height: 1.3; }
+.rb-gild.locked { background: rgba(255, 255, 255, .6); box-shadow: none; text-align: center; }
+.decor-panel { display: flex; flex-direction: column; gap: 8px; }
+.decor-charm { text-align: center; font-weight: 700; font-size: 15px; color: #b0336a; }
+.decor-charm.muted { color: var(--muted); font-weight: 600; font-size: 13px; }
+.gild-btns { display: flex; flex-direction: column; gap: 8px; align-items: stretch; }
+.btn.gild { background: linear-gradient(#ffe27a, #f0b400); color: #5a3a00; text-shadow: 0 1px 0 rgba(255,255,255,.5); box-shadow: 0 4px 0 #b98200; }
+.btn.gild.ghost { background: var(--cream-2); color: var(--ink); box-shadow: 0 3px 0 #d6c39b; }
+.btn.armed { animation: pulse .8s ease-in-out infinite; }
+/* landscape phones: a small sheet may be taller (40vh is only ~150 px), and the Gild buttons sit side by side */
+@media (max-height: 500px) {
+  .sheet.small { max-height: 72vh; }
+  .gild-btns { flex-direction: row; }
+  .gild-btns .btn { flex: 1; padding-left: 8px; padding-right: 8px; }
+}
 @media (max-width: 360px) {
   .album-card { min-height: 88px; }
   .album-card .ac-ico { font-size: 32px; }
   .album-dot { width: 22px; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .album-prize .claim-prize { animation: none !important; }
+  .album-prize .claim-prize, .claim-all, .btn.armed { animation: none !important; }
 }

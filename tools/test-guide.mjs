@@ -844,6 +844,73 @@ test('tip:album: the first keepsake, once, coached or independent — never in t
   assert.ok(pendingTip(hi).text.includes('Starry Nights'));
 });
 
+// ---------------------------------------------------------------- Prettiest Farm (§4.5)
+test('tip:ribbons: L19 and a rank to collect, once — never in the tour or with hints off; tap opens 🏆 → Ribbons', () => {
+  const c = coachedAt('carrots', 18);
+  for (let l = 1; l <= 19; l++) c.markSeen('tip:' + l);
+  for (const k of ['tip:camera', 'tip:post2']) c.markSeen(k);
+  assert.ok(c.charm().total >= CFG.CHARM.rank(1), 'the starter decor already reaches rank 1');
+  assert.notEqual(pendingTip(c)?.key, 'tip:ribbons', 'level 18');
+  setLevel(c, 19);
+  const tip = pendingTip(c);
+  assert.equal(tip.key, 'tip:ribbons');
+  assert.equal(tip.text, 'Mayor Hank says your farm is charming, dear — collect your ribbons in 🏆! 🎀');
+  let opened = null;
+  tip.onTap({ hud: { openTreasures: (t) => { opened = t; } } });
+  assert.equal(opened, 'ribbons');
+  assert.ok(markTipSeen(c, tip));
+  assert.notEqual(pendingTip(c)?.key, 'tip:ribbons', 'once');
+  // nothing to collect: no tip
+  const n = coachedAt('carrots', 19);
+  for (let l = 1; l <= 19; l++) n.markSeen('tip:' + l);
+  for (const k of ['tip:camera', 'tip:post2']) n.markSeen(k);
+  n.claimRibbons();
+  assert.notEqual(pendingTip(n)?.key, 'tip:ribbons');
+  // the rewritten level-19 tip comes first; hints off: none
+  const lv = coachedAt('carrots', 19);
+  for (let l = 1; l <= 18; l++) lv.markSeen('tip:' + l);
+  assert.equal(pendingTip(lv).key, 'tip:19');
+  assert.ok(pendingTip(lv).text.includes('💗'));
+  lv.s.settings.hints = 'off';
+  assert.equal(pendingTip(lv), null, 'hints off');
+});
+
+test('ribbons (SimUI): 🏆 opens on a rank to collect → Claim all → (rank 5) chest → the Blossom Oak goes up', () => {
+  const g = coachedAt('carrots', 19);
+  const sim = new SimUI(g);
+  // gems-only ranks: paid in place, the panel stays
+  sim.tap('btn:trophy');
+  assert.deepEqual([sim.ui.panel.id, sim.ui.panel.tab], ['treasures', 'ribbons']);
+  const gems = g.s.gems;
+  sim.tap('ribbons:claim');
+  assert.equal(g.s.charm.ranks, 1);
+  assert.equal(g.s.gems, gems + 2);
+  assert.ok(sim.ui.panel, 'a gems-only rank keeps the panel open');
+  sim.closePanel();
+  // decorate up to rank 5: Claim all → the chest → the Blossom Oak's placement
+  g.s.coins = 1e5;
+  for (const type of ['gazebo', 'fountain', 'birdbath', 'birdbath']) { const [x, z] = g.findFreeSpot(type); assert.ok(g.placeObject(type, x, z, 0), type); }
+  assert.ok(g.charmStatus().reached >= 5, `${g.charm().total}`);
+  sim.tap('btn:trophy');
+  assert.equal(sim.ui.panel.tab, 'ribbons');
+  sim.tap('ribbons:claim');
+  assert.ok(g.s.charm.ranks >= 5 && g.s.charm.titles.includes('Charming Farm'));
+  assert.equal(sim.ui.panel, null, 'a rank with a decoration closes the panel for its chest');
+  sim.pump();
+  assert.equal(sim.ui.modal, 'chest');
+  sim.tap('modal:chest:open');
+  assert.ok(sim.ui.placing && sim.ui.placing.type === 'blossomoak' && sim.ui.placing.gift);
+  sim.tap('place:ok');
+  const oak = g.s.objects.find((o) => o.type === 'blossomoak');
+  assert.ok(oak && oak.free);
+  assert.deepEqual(g.s.gifts, []);
+  // before L19 there's no Ribbons tab to open on
+  const y = coachedAt('carrots', 18);
+  const ys = new SimUI(y);
+  ys.tap('btn:trophy');
+  assert.notEqual(ys.ui.panel.tab, 'ribbons');
+});
+
 // ---------------------------------------------------------------- the Post (§2.8)
 // a tour farm in Chapter 1's egg wait (two fed chickens, eggs due 3 minutes after parcel #1)
 function eggWait() {
