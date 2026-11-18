@@ -21,6 +21,7 @@ const DEFAULT_HOOKS = {
   visitorLine: null, // (visitor) → line shown instead of the villager's usual one
   onSettings: null, // (key, value) a guide setting changed (hints, tapHarvest)
   onUiChange: null, // (reason) panel / tab / modal / popover / placement / tool changed
+  sellFloors: null, // () → { item: qty } "Sell extras" keeps at least (what the goal, an order or the animals need)
 };
 
 // tiny hyperscript helper
@@ -545,12 +546,15 @@ export class HUD {
       h('div', { class: 'seed-meta' }, `🪙${def.seedCost} · ${fmtTime(g.cropTime(c.type) / 1000)}`),
       ));
     }
-    list.append(h('button', { class: 'seed-card pop more', 'data-guide': 'seed:more', onclick: () => {
-      this.audio.play('click');
-      this.closeSeedPopover();
-      if (opts.onMore) opts.onMore();
-      else this.ctrl.setTool('seed');
-    } }, h('div', { class: 'seed-ico' }, '🌱'), h('div', { class: 'seed-name' }, 'Seeds tool ▸'), h('div', { class: 'seed-meta' }, 'drag to plant')));
+    // the Seeds tool only once the tool group (with its way back to the Hand) is shown
+    if (this.revealed('tools')) {
+      list.append(h('button', { class: 'seed-card pop more', 'data-guide': 'seed:more', onclick: () => {
+        this.audio.play('click');
+        this.closeSeedPopover();
+        if (opts.onMore) opts.onMore();
+        else this.ctrl.setTool('seed');
+      } }, h('div', { class: 'seed-ico' }, '🌱'), h('div', { class: 'seed-name' }, 'Seeds tool ▸'), h('div', { class: 'seed-meta' }, 'drag to plant')));
+    }
     const arrow = h('div', { class: 'seed-pop-arrow' });
     const el = h('div', { class: 'seed-pop' }, list, arrow);
     el.addEventListener('pointerdown', (e) => e.stopPropagation());
@@ -674,7 +678,9 @@ export class HUD {
       h('div', { class: 'sheet-head' }, h('div', { class: 'sheet-title' }, title), h('button', { class: 'close', 'data-guide': 'panel:close', onclick: () => this.closePanel() }, '✕')),
       tabBar, body,
     );
-    const backdrop = h('div', { class: 'backdrop', onclick: (e) => { if (e.target === backdrop) this.closePanel(); } }, sheet);
+    // a tap outside the sheet closes it, but not the click a phone sends right after the very tap that opened it
+    // (a building tapped on the farm, the Clear tool on a gift): that one lands on the new backdrop
+    const backdrop = h('div', { class: 'backdrop', onclick: (e) => { if (e.target === backdrop && performance.now() - panel.openedAt > 400) this.closePanel(); } }, sheet);
     panel.el = backdrop;
     this.panel = panel;
     this.modalLayer.append(backdrop);
@@ -935,7 +941,7 @@ export class HUD {
       for (const [id, n] of entries) {
         const it = ITEMS[id];
         const sel = this._sellSel === id;
-        grid.append(h('div', { class: 'item-card' + (sel ? ' active' : '') + (it.cat === 'material' ? ' material' : ''), onclick: () => { this._sellSel = sel ? null : id; this.audio.play('click'); this.refreshPanel(); } },
+        grid.append(h('div', { class: 'item-card' + (sel ? ' active' : '') + (it.cat === 'material' ? ' material' : ''), 'data-guide': 'storage:item:' + id, onclick: () => { this._sellSel = sel ? null : id; this.audio.play('click'); this.refreshPanel(); } },
           h('div', { class: 'item-ico' }, it.icon),
           h('div', { class: 'item-count' }, '×' + n),
           h('div', { class: 'item-name' }, it.name),
@@ -946,15 +952,15 @@ export class HUD {
     }
     if (this._sellSel && g.count(this._sellSel) && g.storageOf(this._sellSel) === sid) {
       const id = this._sellSel, it = ITEMS[id], n = g.count(id);
-      const sellBtn = (q, label) => h('button', { class: 'btn', onclick: () => this.ctrl.sell(id, q) }, label);
+      const sellBtn = (q, label, key = null) => h('button', { class: 'btn', 'data-guide': key, onclick: () => this.ctrl.sell(id, q) }, label);
       wrap.append(h('div', { class: 'sell-bar' },
         h('div', {}, `${it.icon} ${it.name} ×${n}`, it.cat === 'material' ? h('div', { class: 'muted small' }, 'Used for upgrades & land') : null),
-        h('div', { class: 'sell-btns' }, sellBtn(1, `Sell 1 · 🪙${it.price}`), n > 1 ? sellBtn(n, `Sell all · 🪙${it.price * n}`) : null),
+        h('div', { class: 'sell-btns' }, sellBtn(1, `Sell 1 · 🪙${it.price}`, 'storage:sell:' + id), n > 1 ? sellBtn(n, `Sell all · 🪙${it.price * n}`) : null),
       ));
     }
     if (used >= cap * 0.9) {
       wrap.append(h('div', { class: 'panel-foot center' }, h('button', { class: 'btn small', 'data-guide': 'storage:sellExtras:' + sid, onclick: () => {
-        const earned = g.sellExtras(sid, 10);
+        const earned = g.sellExtras(sid, 10, this.hook('sellFloors') || {});
         if (earned) { this.audio.play('coin'); this.toast(`Sold extras for 🪙${fmtNum(earned)}`, 'good'); }
         this.refreshPanel();
       } }, '🧹 Sell extras (keep 10 of each)')));
@@ -1264,7 +1270,8 @@ export class HUD {
       title: `${d.icon} ${d.name}`, cls: 'small',
       render: () => h('div', { class: 'panel-foot center' },
         h('button', { class: 'btn', onclick: () => { this.closePanel(); this.ctrl.startPlacement(o.type, o.id); } }, '✥ Move'),
-        h('button', { class: 'btn red', onclick: () => { this.closePanel(); this.ctrl.removeObject(o); } }, `Sell 🪙${Math.floor(d.cost / 2)}`),
+        // a free one (starter decor, a chapter gift) refunds nothing
+        h('button', { class: 'btn red', onclick: () => { this.closePanel(); this.ctrl.removeObject(o); } }, o.free ? 'Remove' : `Sell 🪙${Math.floor(d.cost / 2)}`),
       ),
     });
   }

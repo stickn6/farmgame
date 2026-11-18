@@ -240,7 +240,8 @@ class Controller {
         if (o && OBJECTS[o.type].kind === 'debris') { this.clearDebris(o); return; } // tap or drag
         if (o && isTap) {
           const kind = OBJECTS[o.type].kind;
-          if (kind === 'decor') this.removeObject(o);
+          // free decor (a chapter gift, the starter flowers) refunds nothing: ask in its panel instead of one tap
+          if (kind === 'decor') { if (o.free) { this.paint = null; this.hud.openDecor(o); } else this.removeObject(o); }
           else if (kind === 'tree') {
             if (g.treeState(o) === 'dead') this.removeObject(o);
             else { this.paint = null; this.hud.openTree(o); } // ask in-game, never with a blocking dialog mid-gesture

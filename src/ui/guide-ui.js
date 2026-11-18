@@ -7,14 +7,16 @@ import * as THREE from 'three';
 import './guide.css';
 import { ITEMS, OBJECTS, ANIMALS, CHAPTERS, QUESTS, TUTORIAL, GUIDE, VISITORS, RECIPES } from '../game/config.js';
 import {
-  planStep, need, nextMode, questCardInfo, shouldAutoShowDaily, levelUpGo, pendingTip, graduationPending, fieldCentre,
+  planStep, need, nextMode, questCardInfo, shouldAutoShowDaily, levelUpGo, pendingTip, graduationPending, fieldCentre, reserves,
 } from '../game/guide.js';
 import { tileToWorld } from '../game/world.js';
 import { objectCenter } from '../game/views.js';
 import { h, fmtClock } from './hud.js';
 
 const TICK = 0.25; // s between planner passes (plus one right after each burst of game events)
-const LOOKUP = 0.1; // s between data-guide re-queries
+const LOOKUP = 0.1; // s between data-guide re-queries (and tile hit tests)
+const TOUCH_CLEAR = 22; // px a pointed-at tile keeps from speech bubbles (a fingertip's touch area plus the bob)
+const TOUCH_SLOP = 14; // px around the fingertip that must reach the canvas too
 const HOLE_PAD = 12; // spotlight hole around the target (px)
 const RING_PAD = 6;
 const ARROW_INSET = 24; // edge arrows sit this far inside the safe rect
@@ -120,6 +122,12 @@ export class GuideLayer {
     return c.el;
   }
 
+  // forget elements that left the page (a closed panel, a served visitor's bubble): keys carry ids, so the cache
+  // would otherwise grow all session and keep each removed subtree alive. Run when the pointed-at step changes.
+  prune() {
+    for (const [k, c] of this.cache) if (!c.el?.isConnected) this.cache.delete(k);
+  }
+
   resolveKey(key) {
     const el = this.el(key);
     const bubble = key.startsWith('bubble:');
@@ -167,22 +175,50 @@ export class GuideLayer {
     if (!tiles?.length) return null;
     const pts = this.world.tilesCorners(tiles, y);
     const out = this.fromPoints(pts);
-    // the finger goes on the tile nearest the screen centre (its ground centre, where a tap lands),
-    // skipping tiles hidden under a speech bubble or the HUD when another one is clear
-    const cx = innerWidth / 2, cy = innerHeight / 2;
-    const screen = tiles.map(([x, z]) => this.world.projectArrow(tileToWorld(x, z, this.tmp).setY(0.02))).filter((p) => !p.behind);
+    // the finger goes on a tile's ground centre, where a tap lands (see pickTile)
+    const screen = [];
+    for (const [x, z] of tiles) {
+      const p = this.world.projectArrow(tileToWorld(x, z, this.tmp).setY(0.02));
+      if (!p.behind) screen.push({ x: p.x, y: p.y, tile: x + ',' + z });
+    }
     if (!screen.length) return out;
-    const near = [...screen].sort((a, b) => (a.x - cx) ** 2 + (a.y - cy) ** 2 - ((b.x - cx) ** 2 + (b.y - cy) ** 2));
-    const clear = (p) => this.tappable(p) && !this.occluded(p);
-    const best = near.slice(0, 6).find(clear) || near[0];
+    const { p: best, clear } = this.pickTile(tiles, screen);
     out.point = { x: best.x, y: best.y };
-    out.clear = best !== near[0] || clear(best);
+    out.clear = clear;
     if (screen.length > 1) {
       // a swipe starts on that tile and runs to the far end of the patch
       const far = screen.reduce((f, p) => ((p.x - best.x) ** 2 + (p.y - best.y) ** 2 > (f.x - best.x) ** 2 + (f.y - best.y) ** 2 ? p : f), best);
       out.path = { from: out.point, to: { x: far.x, y: far.y } };
     }
     return out;
+  }
+
+  // The tile nearest the screen centre that a fingertip can hit cleanly: no speech bubble within TOUCH_CLEAR px
+  // (a phone's touch adjustment pulls a tap that close onto the bubble, e.g. the Bakery's next to the field) and
+  // the canvas under the whole fingertip. Else the nearest one whose centre is clear (clear: true), else the
+  // nearest (clear: false). Hit tests are costly: the choice is re-checked every LOOKUP s and re-projected between.
+  pickTile(tiles, screen) {
+    const t = nowS();
+    const sig = tiles.map((p) => p[0] + ',' + p[1]).join(' ');
+    const c = this.tileChoice;
+    const kept = c && c.sig === sig && t - c.t <= LOOKUP && screen.find((p) => p.tile === c.tile);
+    if (kept) return { p: kept, clear: c.clear };
+    const cx = innerWidth / 2, cy = innerHeight / 2;
+    const near = screen.sort((a, b) => (a.x - cx) ** 2 + (a.y - cy) ** 2 - ((b.x - cx) ** 2 + (b.y - cy) ** 2));
+    const bubbles = [];
+    for (const el of document.querySelectorAll('.bubble-anchor')) {
+      const r = el.getBoundingClientRect();
+      if (r.width > 0) bubbles.push(pad({ x: r.left, y: r.top, w: r.width, h: r.height }, TOUCH_CLEAR));
+    }
+    const centre = new Map();
+    const hits = (p) => { if (!centre.has(p)) centre.set(p, this.tappable(p) && !this.occluded(p)); return centre.get(p); };
+    const roomy = (p) => !bubbles.some((r) => inRect(p.x, p.y, r)) && hits(p)
+      && [[TOUCH_SLOP, 0], [-TOUCH_SLOP, 0], [0, TOUCH_SLOP], [0, -TOUCH_SLOP]].every(([dx, dy]) => this.tappable({ x: p.x + dx, y: p.y + dy }));
+    let p = near.find(roomy), clear = true;
+    if (!p) p = near.find(hits);
+    if (!p) { p = near[0]; clear = false; }
+    this.tileChoice = { sig, t, tile: p.tile, clear };
+    return { p, clear };
   }
 
   resolveObject(id) {
@@ -217,8 +253,10 @@ export class GuideLayer {
     // a world target counts when a tap would reach it (a hard beat's hole is kept clear, so there the safe rect will do)
     const reach = () => (res.clear !== undefined ? res.clear : this.tappable(res.point, res.el) && !(res.objectId != null && this.occluded(res.point, res.objectId)));
     const onScreen = res && (res.dom || (res.visible && ((v.hard && inSafe(res.point, safe)) || reach())));
-    // a HUD modal (level-up, chest, daily) keeps Mabel's card, but her side chips wait behind it
+    // a HUD modal (level-up, chest, daily) keeps Mabel's card, but her side chips wait behind it; so do her toasts
+    // and coach chips while a panel or the seed popover is up (they'd sit on its title, ✕ or seed cards)
     this.root.classList.toggle('g-hud-modal', !!this.hud.topModal());
+    this.root.classList.toggle('g-hud-panel', !!(this.hud.panel || this.hud.seedPopoverOpen()));
     // spotlight + 4 blockers around the hole
     const hole = v.hard && res ? this.clampRect(pad(res.rect, HOLE_PAD)) : null;
     this.spot.classList.toggle('hidden', !hole);
@@ -465,14 +503,18 @@ export class GuideLayer {
     return el;
   }
 
-  // portrait + line under the quest card (coached: the new goal's line)
-  coach(text, ms = 5000) {
+  // portrait + line under the quest card (coached: the new goal's line).
+  // keep: it answers what the player just did, so it stays up over an open panel or popover (see render)
+  coach(text, ms = 5000, { keep = false } = {}) {
     this.coachEl?.remove();
     const q = this.hud.questCard;
     const qr = shown(q) ? q.getBoundingClientRect() : null;
-    const el = h('div', { class: 'g-coach' }, h('div', { class: 'g-face small' }, GUIDE.icon), h('div', {}, text));
-    let under = this.cardOn && this.cardTop ? this.card.getBoundingClientRect().bottom : qr ? qr.bottom : this.topEdge(false) - 8;
+    const el = h('div', { class: 'g-coach' + (keep ? ' g-keep' : '') }, h('div', { class: 'g-face small' }, GUIDE.icon), h('div', {}, text));
+    const card = this.cardOn && this.cardTop ? this.card.getBoundingClientRect().bottom : null;
+    let under = card ?? (qr ? qr.bottom : this.topEdge(false) - 8);
     if (this.toastEl?.isConnected && !this.toastEl._dying) under = Math.max(under, this.toastEl.getBoundingClientRect().bottom);
+    // over an open panel or popover: up on the dimmed top bar (under Mabel's card when it is up there)
+    if (keep && (this.hud.panel || this.hud.seedPopoverOpen())) under = card ?? 0;
     el.style.top = Math.round(under + 8) + 'px';
     this.coachEl = this.transient(el, ms);
     // under the goal card's left edge, but never off screen (the card may be mid-wiggle)
@@ -481,11 +523,12 @@ export class GuideLayer {
     return el;
   }
 
-  // portrait + one line under the top bar (interrupts, tips, Mabel's pocket money): up there it never
-  // covers a bottom sheet the player opens meanwhile
-  toastCard(text, { ms = 6000, onTap = null } = {}) {
+  // portrait + one line under the top bar (interrupts, tips, Mabel's pocket money). A tall goal card pushes it
+  // down onto where a bottom sheet starts, so it hides while a panel or the seed popover is up (its timer runs on);
+  // keep: a line about that very panel (an interrupt chain's), which docks over the dimmed top bar instead
+  toastCard(text, { ms = 6000, onTap = null, keep = false } = {}) {
     this.toastEl?.remove();
-    const el = h('div', { class: 'g-toast' }, h('div', { class: 'g-face' }, GUIDE.icon), h('div', { class: 'g-body' }, h('div', { class: 'g-name' }, GUIDE.name), h('div', {}, text)));
+    const el = h('div', { class: 'g-toast' + (keep ? ' g-keep' : '') }, h('div', { class: 'g-face' }, GUIDE.icon), h('div', { class: 'g-body' }, h('div', { class: 'g-name' }, GUIDE.name), h('div', {}, text)));
     if (onTap) el.addEventListener('click', onTap);
     const coach = this.coachEl?.isConnected && !this.coachEl._dying ? this.coachEl.getBoundingClientRect().bottom + 4 : 0;
     el.style.top = Math.round(Math.max(this.topEdge(false), coach)) + 'px';
@@ -570,6 +613,8 @@ export class GuideController {
       visitorLine: (v) => (v.first ? VISITORS.firstLine : null),
       onSettings: () => this.requestTick(),
       onUiChange: () => this.requestTick(),
+      // "Sell extras" never sells below what the planner keeps back for the goal, an order or the animals
+      sellFloors: () => reserves(g),
     });
 
     for (const e of IDLE_EVENTS) g.on(e, () => { this.lastActivity = nowS(); this.wiggled = false; });
@@ -583,6 +628,8 @@ export class GuideController {
     g.on('safetyNet', () => this.speak('safetyNet', TUTORIAL.lines.safetyNet, { once: false }));
     g.on('tutorial', () => this.modeChanged());
     document.addEventListener('pointerdown', (e) => this.onPointer(e), true);
+    document.addEventListener('pointerup', (e) => this.pointerUp(e), true);
+    document.addEventListener('pointercancel', (e) => this.pointerUp(e), true);
   }
 
   // ------------------------------------------------------------ start (§6.7)
@@ -703,7 +750,9 @@ export class GuideController {
       this.autoDaily();
       this.tips();
       this.pump();
+      const was = this.view?.act?.key;
       this.view = this.decide(step, ui);
+      if (this.view.act?.key !== was) this.layer.prune();
       this.cardLine(step);
       this.chips(step);
       this.markers();
@@ -805,8 +854,10 @@ export class GuideController {
     const s = this.session, g = this.game;
     if (s.kind === 'need') return need(g, ui, s.item, 0, 1);
     if (s.kind === 'interrupt') return this.step?.why === 'interrupt' && this.step.interrupt === s.key ? this.step : null;
-    if (s.kind === 'meanwhile') return this.step?.meanwhile || this.step;
-    return this.step;
+    // Show me keeps to the goal: a one-time beat that comes up meanwhile waits for the session (its line comes with it)
+    const st = this.step?.why === 'interrupt' ? planStep(g, { ...ui, skipInterrupt: true }, { cache: false }) : this.step;
+    if (s.kind === 'meanwhile') return st?.meanwhile || st;
+    return st;
   }
 
   sessionAlive(st, act, now) {
@@ -832,7 +883,7 @@ export class GuideController {
     else if (st?.kind === 'wait' && st.wait?.until) text = `⏳ ${st.wait.icon || ''} ${shortTime((st.wait.until - now) / 1000)} · ${st.wait.label || st.label || ''}`;
     else if (st?.say) text = st.say;
     else if (st?.label && st.kind === 'none') text = `${st.icon || ''} ${st.label}`;
-    this.layer.coach(text.replace(/\s+/g, ' ').trim(), 4000);
+    this.layer.coach(text.replace(/\s+/g, ' ').trim(), 4000, { keep: true });
   }
 
   onPointer(e) {
@@ -852,7 +903,22 @@ export class GuideController {
     }
     // scrolling the open panel or picking in the seed popover is not a miss
     if (t.closest?.('.sheet, .seed-pop, .levelup')) return;
+    if (t === this.world.canvas) {
+      // on the farm only a tap counts (§2.2 "2 taps outside the target"): a pinch's second finger or a camera drag
+      // doesn't. Input decides on pointerup, so the miss waits for it (see pointerUp)
+      if (this.ctrl.input.pointers.size === 0) s.pendingMiss = e.pointerId;
+      return;
+    }
     s.misses++;
+  }
+
+  // capture phase, before Input's own pointerup (a window listener): its gesture still says whether that was a tap
+  pointerUp(e) {
+    const s = this.session;
+    if (!s || s.pendingMiss == null || s.pendingMiss !== e.pointerId) return;
+    s.pendingMiss = null;
+    const gest = this.ctrl.input.gesture;
+    if (e.type === 'pointerup' && gest && gest.id === e.pointerId && !gest.moved && (gest.mode === 'pan' || gest.mode === 'paint')) s.misses++;
   }
 
   // Tapping a glowing hint (a new goal's glow, an idle nudge) takes it: like Show me, the finger then walks the rest
@@ -936,6 +1002,12 @@ export class GuideController {
     this.trackCamera();
     const v = this.view || {};
     let res = v.act ? this.layer.resolve(v.act.target, v.act) : null;
+    // a speech bubble a tap can't reach (off screen, under the HUD) whose step has a HUD way in: point there instead
+    // (B4 / B11: the order board's bubble → the 🚚 Orders button); the edge arrow stays for targets without one
+    if (res?.rect && !res.dom && v.act.fallback && v.act.target?.ui?.startsWith('bubble:') && !(res.visible && this.layer.tappable(res.point, res.el))) {
+      const fb = this.layer.resolveKey(v.act.fallback);
+      if (fb?.rect && fb.dom) res = fb;
+    }
     if (res && res.hidden !== undefined) {
       // a hidden HUD group is revealed before it is pointed at
       if (res.hidden) this.game.reveal(res.hidden);
@@ -948,8 +1020,11 @@ export class GuideController {
     // (A target inside the panel that is scrolled out of view is scrolled to instead, below.)
     const sheet = this.hud.panel?.el;
     if (res?.under && sheet && !sheet.contains(res.el) && res.under.closest('.backdrop') === sheet) res = this.layer.resolveKey('panel:close') || res;
-    // the seed popover of an earlier tap hides the tile Mabel now points at: put it away
-    if (res && !res.dom && res.visible && this.hud.seedPopoverOpen() && !v.act.target?.ui?.startsWith('seed:')) {
+    // the seed popover of an earlier tap hides the tile Mabel now points at: put it away (never one opened while
+    // she pointed at the same thing: that's the player's own tap, made just now)
+    const pop = this.hud.seedPop?.el || null;
+    if (pop !== this.popEl) { this.popEl = pop; this.popActKey = v.act?.key ?? null; }
+    if (res && !res.dom && res.visible && pop && this.popActKey !== v.act.key && !v.act.target?.ui?.startsWith('seed:')) {
       const el = document.elementFromPoint(res.point.x, res.point.y);
       if (el?.closest('.seed-pop')) this.hud.closeSeedPopover();
     }
@@ -1066,7 +1141,17 @@ export class GuideController {
     // §2.5: a new goal in coached mode gets Mabel's line for 5 s and a short glow on its target
     if (mode === 'coached' && qi < QUESTS.length && !graduationPending(g) && g.s.settings?.hints !== 'off') {
       const q = g.currentQuest();
-      setTimeout(() => { if (this.game.s.quest.index === qi && !this.hud.topModal()) this.layer.coach(q.say || q.text, 5000); }, 900);
+      // it waits (≤ 60 s) for a modal (the chapter chest), the gift's ghost and another of her lines: it never
+      // replaces "Tap ✓ to put it up", and comes once the gift is up
+      let tries = 0;
+      const say = () => {
+        if (this.game.s.quest.index !== qi) return;
+        const L = this.layer, talking = L.coachEl?.isConnected && !L.coachEl._dying;
+        const wait = this.hud.topModal() || this.ctrl.placing?.gift || talking;
+        if (wait && ++tries < 60) { setTimeout(say, 1000); return; }
+        if (!this.hud.topModal() && !this.ctrl.placing?.gift) L.coach(q.say || q.text, 5000);
+      };
+      setTimeout(say, 900);
       this.glowUntil = nowS() + 1 + GLOW_NEW;
     }
   }
@@ -1123,7 +1208,7 @@ export class GuideController {
     }
     if (!guided && step.say && this.toastFor !== step.stepKey) {
       this.toastFor = step.stepKey;
-      this.layer.toastCard(step.say, { ms: 6000 });
+      this.layer.toastCard(step.say, { ms: 6000, keep: true });
     }
   }
 
@@ -1202,7 +1287,7 @@ export class GuideController {
       if (nowS() < next.at) return;
       const modal = next.kind === 'chest' || next.kind === 'daily';
       // toast-cards and chains wait for a free screen and for Mabel to finish what she is showing
-      if (!modal && (hud.panel || this.session || this.layer.toastEl?.isConnected)) return;
+      if (!modal && (hud.panel || hud.seedPopoverOpen() || this.session || this.layer.toastEl?.isConnected)) return;
       this.queue.shift();
       if (!next.valid()) continue;
       if (hud.panel) hud.closePanel();
@@ -1286,7 +1371,14 @@ export class GuideController {
   }
 
   placementCancelled(p) {
-    if (p?.gift && graduationPending(this.game)) this.game.markSeen('grad:gift'); // the gift waits in Shop → Decor
+    const g = this.game;
+    if (p?.gift && graduationPending(g)) g.markSeen('grad:gift'); // the gift waits in Shop → Decor
+    // and Mabel says so, once the screen is free (in the tour that's after the daily gift)
+    const waits = () => (g.s.gifts || []).includes(p.type);
+    if (p?.gift && waits() && g.s.settings?.hints !== 'off') {
+      const text = TUTORIAL.lines.giftWaits.replace('{gift}', OBJECTS[p.type]?.name || 'gift');
+      this.enqueue('giftWaits', () => this.speak('giftWaits', text, { once: false }), waits);
+    }
     this.requestTick();
   }
 

@@ -649,6 +649,7 @@ export const TUTORIAL = {
     cameraTip: 'Drag to look around · pinch to zoom.',
     chickens: 'An empty coop is a sad coop. Let\'s get two chickens!',
     chickensPanel: 'Tap Buy — then once more, so she has a friend.',
+    chickensMore: 'One more chicken so she has a friend — the Shop has them!',
     feed: 'They\'re peckish! Tap the coop to feed them wheat.',
     plow: 'More fields, more food! Pick the Plow.',
     plowTiles: 'Tap the marked grass. New fields cost a few coins.',
@@ -678,11 +679,14 @@ export const TUTORIAL = {
     migratedTip: 'New: tap your goal card and I\'ll show you the way 👆',
     safetyNet: 'A little something to get you going, dear.',
     busy: 'Everything\'s busy! Next: {icon} {time}',
+    busyIdle: 'Nothing\'s growing or cooking just now — check back a little later, dear.',
+    sellFew: 'Short on coins, dear? Sell a spare or two from storage 📦 — tap it, then Sell.',
+    giftWaits: 'No rush, dear — your {gift} waits in Shop → Decor 🎁',
   },
 };
 // the Chapter 1 tour lines: shown once each; Skip and old saves mark them all as seen
 TUTORIAL.ch1Lines = ['welcome', 'harvest', 'claim', 'plant', 'claimL2', 'levelup2', 'levelup3', 'levelup4', 'order1', 'order1Panel',
-  'coop', 'coopShop', 'coopPlace', 'place', 'cameraTip', 'chickens', 'chickensPanel', 'feed', 'plow', 'plowTiles', 'plowTip', 'carrots',
+  'coop', 'coopShop', 'coopPlace', 'place', 'cameraTip', 'chickens', 'chickensPanel', 'chickensMore', 'feed', 'plow', 'plowTiles', 'plowTip', 'carrots',
   'eggs', 'eggsMeanwhile', 'eggsCollected', 'bakery', 'bakeryCoins', 'bread', 'breadWheat', 'breadFree', 'breadCollect',
   'grad', 'gradGift', 'gradDaily', 'gradEnd', 'skipConfirm'];
 

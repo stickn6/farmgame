@@ -5,7 +5,7 @@
 //
 //   const f = new GuideFollower(game, { advance: (sec) => { t += sec * 1000; } });
 //   const report = f.run({ maxSec: 90 * 60, until: (g) => g.s.quest.index >= QUESTS.length });
-import { planStep, nextMode, placementSpot, plantCap, shouldAutoShowDaily, graduationPending } from '../src/game/guide.js';
+import { planStep, nextMode, placementSpot, plantCap, shouldAutoShowDaily, graduationPending, reserves } from '../src/game/guide.js';
 import { OBJECTS, ANIMALS, CROPS, QUESTS, CHAPTERS } from '../src/game/config.js';
 
 // §7.2: 4 s per tap, 3 s per new Mabel line, double for first-time UI, 6 s per level-up modal
@@ -95,6 +95,11 @@ export class SimUI {
     if (!pl.valid) return null;
     const grad = pl.gift && graduationPending(g);
     const o = pl.gift ? g.placeGift(pl.type, pl.x, pl.z, pl.rot) : g.placeObject(pl.type, pl.x, pl.z, pl.rot);
+    // cheap decor keeps placing while coins last, as in main.js (the ghost stays on the one just built)
+    if (o && !pl.gift && OBJECTS[pl.type].kind === 'decor' && g.s.coins >= OBJECTS[pl.type].cost) {
+      pl.valid = g.canPlace(pl.type, pl.x, pl.z, pl.rot);
+      return o;
+    }
     // a failed build (coins, limits) cancels instead of looping on the ghost
     this.ui.placing = null;
     if (grad) g.markSeen('grad:gift');
@@ -216,7 +221,8 @@ export class SimUI {
         else if (a === 'shop' && b === 'gift') { this.closePanel(); this.startPlacement(c, { gift: true }); }
         else if (a === 'shop' && b === 'animal') g.buyAnimal(c);
         else if (a === 'shop' && b === 'land') { this.closePanel(); g.expandLand(); }
-        else if (a === 'storage' && b === 'sellExtras') g.sellExtras(c, 10);
+        else if (a === 'storage' && b === 'sellExtras') g.sellExtras(c, 10, reserves(g));
+        else if (a === 'storage' && b === 'sell') g.sell(c, 1); // the item's card was picked first (storage:item:<id>)
         else if (a === 'storage' && b === 'upgrade') g.upgradeStorage(c);
         break;
       case 'place':
@@ -392,6 +398,8 @@ export class GuideFollower {
         if (this.onQuest) this.onQuest(qi, this);
       }
     }
+    // still stuck when the run ends (e.g. a wait on no timer at all): that's a dead end too
+    if (stalledSince != null && (g.now() - stalledSince) / 1000 > 30) r.deadEnds.push({ at: +min().toFixed(2), sec: (g.now() - stalledSince) / 1000, key: lastKey, open: true });
     for (const off of offs) off();
     r.taps = sim.taps;
     r.minutes = +min().toFixed(2);

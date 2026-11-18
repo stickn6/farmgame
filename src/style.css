@@ -566,7 +566,7 @@ button { font-family: inherit; color: inherit; cursor: pointer; border: none; ba
 /* shop → decor: chapter gifts */
 .gifts { background: linear-gradient(#fff6c9, #ffeeb0); border-radius: 16px; padding: 10px; margin-bottom: 12px; box-shadow: 0 3px 0 #e8cf7a; }
 .gifts-head { font-weight: 700; margin-bottom: 8px; }
-.gift-cards { display: flex; gap: 10px; overflow-x: auto; scrollbar-width: none; touch-action: pan-x; padding-bottom: 3px; }
+.gift-cards { display: flex; gap: 10px; overflow-x: auto; scrollbar-width: none; touch-action: pan-x pan-y; padding-bottom: 3px; }
 .gift-card {
   flex: 0 0 auto; width: 124px; background: #fff; border-radius: 14px; padding: 8px; position: relative;
   display: flex; flex-direction: column; align-items: center; gap: 2px; box-shadow: 0 3px 0 #e3d3ad;

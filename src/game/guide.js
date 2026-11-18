@@ -9,7 +9,8 @@
 //   target: { ui: '<data-guide key>' } | { world: 'tiles', tiles } | { world: 'object', id }
 //         | { world: 'ghostPlots', tiles } | { world: 'visitor', id } | { world: 'ghost' } | null
 //   ui: { panel: { id, tab, ref, age } | null, placing: { type, valid, gift } | null, tool,
-//         modal: 'levelup'|'daily'|'chest'|'guide'|null, popover: { x, z } | null, interrupt: { key, … } | null }
+//         modal: 'levelup'|'daily'|'chest'|'guide'|null, popover: { x, z } | null, interrupt: { key, … } | null,
+//         skipInterrupt?: true (plan the goal as if no one-time beat were waiting: a running Show me) }
 // Steps are memoised and shared: treat them as read-only.
 import {
   ITEMS, CROPS, ANIMALS, RECIPES, OBJECTS, STORAGE, QUESTS, CHAPTERS, TUTORIAL, FEATURE_TIPS, VISITORS, WAGON, PLOTS, GUIDE,
@@ -347,21 +348,22 @@ function plantStep(g, ui, crop, patch, cap, extra = {}) {
 }
 
 // The tiles a plow step suggests: Mabel's ghost plots for the guided plow goal, else the neatest spots.
-function ghostTiles(g, n) {
+// anywhere (the plow goal): a field fenced in on every side still gets a spot, a new patch near the farm core.
+function ghostTiles(g, n, anywhere = false) {
   const q = g.currentQuest();
   if (guided(g) && q.id === 'plow') {
     const free = (x, z) => g.inLand(x, z) && !g.objectAt(x, z) && !g.soilAt(x, z);
     const tiles = TUTORIAL.plowSuggest.map(tutorialTile).filter(([x, z]) => free(x, z)).slice(0, n);
     if (tiles.length >= Math.min(n, g.plotCap() - g.plotCount())) return tiles;
   }
-  return g.suggestPlowSpots(n);
+  return g.suggestPlowSpots(n, { anywhere });
 }
 
-function plowStep(g, ui, n = 2, extra = {}) {
+function plowStep(g, ui, n = 2, extra = {}, anywhere = false) {
   if (g.plotCount() >= g.plotCap()) return blocked(g, ui, levelBlock(g, g.s.level + 1), 'plow', extra);
   const cost = g.plowCost();
   if (g.s.coins < cost) return blocked(g, ui, coinsBlock(g, cost), 'plow', extra);
-  const tiles = ghostTiles(g, Math.max(1, n));
+  const tiles = ghostTiles(g, Math.max(1, n), anywhere);
   if (!tiles.length) return null;
   const base = { action: 'plow', icon: '🚜', label: 'Plow a field', ghostPlots: tiles, ...extra };
   if (ui.tool !== 'plow') return reach(ui, uiStep('plow:tool', 'tool:plow', { ...base, chain: ['tool:plow'] }));
@@ -593,11 +595,31 @@ function timers(g) {
   return out.sort((a, b) => a.until - b.until);
 }
 
-// "Everything's busy! Next: 🥚 0:42" — the step is never blank
+// "Everything's busy! Next: 🥚 0:42" — the step is never blank. With no timer running at all it says so and
+// promises no time (a wait without until: GuideFollower counts it as a dead end).
 function busyStep(g) {
   const now = g.now();
-  const t = timers(g)[0] || { until: now + 30000, icon: '⏳' };
+  const t = timers(g)[0];
+  if (!t) return waitStep('busy', null, '⏳', 'Nothing growing', { stepKey: 'busy', say: TUTORIAL.lines.busyIdle });
   return waitStep('busy', t.until, t.icon, 'Everything\'s busy!', { stepKey: 'busy', say: fill(TUTORIAL.lines.busy, { icon: t.icon, time: clock(t.until - now) }) });
+}
+
+// The last way to coins when nothing grows, works or comes by itself: sell one spare item at a time
+// (📦 → its tab → the item → Sell 1). Spare: above the reserves; the one you hold most of (ties: the cheaper).
+function sellFewStep(g, ui) {
+  if (timers(g).length) return null;
+  const res = reserves(g);
+  let best = null;
+  for (const [item, n] of Object.entries(g.s.inventory)) {
+    const id = g.storageOf(item), price = ITEMS[item]?.price || 0, extra = n - (res[item] || 0);
+    if (!id || !price || extra < 1) continue;
+    if (!best || extra > best.extra || (extra === best.extra && price < best.price)) best = { item, id, extra, price };
+  }
+  if (!best) return null;
+  const { item, id } = best;
+  // the Sell button shows once the item is picked: until then the finger falls back to the item's card
+  return viaPanel(g, ui, `sellFew:${item}`, { panel: 'barn', tabKey: 'storage', tab: id, opener: 'btn:barn', target: `storage:sell:${item}` },
+    { chain: ['btn:barn', `storage:tab:${id}`, `storage:item:${item}`, `storage:sell:${item}`], stepKey: 'sellFew', storage: id, item, icon: ITEMS[item].icon, label: 'Sell a spare' });
 }
 
 // ---------------------------------------------------------------- earn (§2.3) and Meanwhile (§2.4)
@@ -608,7 +630,7 @@ export function earn(game, ui = {}, n = 0, { xp = false } = {}) {
   const tries = xp
     ? [choreStep, collectStep, harvestAny, plantIdle, deliverStep, serveStep, feedStep, makeIdle, debrisStep, plowIdle]
     : [choreStep, deliverStep, serveStep, collectStep, harvestAny, (gg, u) => sellStep(gg, u, 'silo', Math.min(n, 20)) || sellStep(gg, u, 'barn', Math.min(n, 20)),
-      plantIdle, feedStep, makeIdle, debrisStep];
+      plantIdle, feedStep, makeIdle, debrisStep, sellFewStep];
   for (const f of tries) {
     const s = f(g, ui);
     if (s) return { ...s, why: 'quest' };
@@ -857,7 +879,7 @@ function plantPlanner(g, ui, q) {
 
 function plowPlanner(g, ui, q) {
   const n = Math.max(1, q.count - g.questProgress());
-  return plowStep(g, ui, Math.min(n, 4)) || busyStep(g);
+  return plowStep(g, ui, Math.min(n, 4), {}, true) || busyStep(g);
 }
 
 function orderPlanner(g, ui) {
@@ -1165,7 +1187,8 @@ export function pendingInterrupt(game, ui = {}) {
   }
   for (const id of Object.keys(STORAGE)) {
     const key = id + 'Full';
-    if (g.hasSeen(key) || g.storageUsed(id) < FULL_SHARE * g.storageCap(id)) continue;
+    // (the beat waits, unseen, while "Sell extras" would sell nothing: everything is at its keep or reserved)
+    if (g.hasSeen(key) || g.storageUsed(id) < FULL_SHARE * g.storageCap(id) || !sellExtrasValue(g, id)) continue;
     return viaPanel(g, ui, `interrupt:${key}`, { panel: 'barn', tabKey: 'storage', tab: id, opener: 'btn:barn', target: `storage:sellExtras:${id}` },
       { why: 'interrupt', interrupt: key, stepKey: key, storage: id, icon: STORAGE[id].icon, label: 'Sell extras' });
   }
@@ -1193,7 +1216,7 @@ export function pendingInterrupt(game, ui = {}) {
 function normUi(ui = {}) {
   return {
     panel: ui.panel || null, placing: ui.placing || null, tool: ui.tool || 'hand', modal: ui.modal || null,
-    popover: ui.popover || null, interrupt: ui.interrupt || null,
+    popover: ui.popover || null, interrupt: ui.interrupt || null, skipInterrupt: !!ui.skipInterrupt,
   };
 }
 
@@ -1208,15 +1231,20 @@ function modalStep(g, kind) {
   return uiStep('modal:guide', 'guide:next', { ...base, icon: GUIDE.icon, label: GUIDE.name });
 }
 
-function placeStep(g, pl) {
+// A ghost on screen. ✓ (or a drag to a free spot) only for what the planner would build anyway — a gift, the
+// goal's building, a pen for the animals it buys, a workshop a recipe needs. Anything else the player started
+// themselves (a row of fences: cheap decor keeps placing after ✓) gets no finger and no line, so following
+// Mabel never buys more of it; the step names ✕ for headless followers only (pointer: false).
+function placeStep(g, ui, pl) {
   const def = OBJECTS[pl.type] || {};
   const stepKey = pl.gift ? 'gradGift' : pl.type === 'coop' ? 'coopPlace' : 'place';
   const base = { build: pl.type, gift: !!pl.gift, stepKey, icon: def.icon || '✓', label: `Build ${def.name || ''}`.trim() };
-  if (pl.valid === false) {
-    // nowhere it fits: back out, and the build step makes room first
-    if (OBJECTS[pl.type] && !g.findFreeSpot(pl.type, 0)) return uiStep(`place:${pl.type}:cancel`, 'place:cancel', { ...base, stepKey: null, label: 'No room yet' });
-    return mk(`place:${pl.type}:drag`, 'world', { world: 'ghost' }, { ...base, gesture: 'swipe' });
+  // nowhere it fits: back out, and the build step makes room first
+  if (pl.valid === false && OBJECTS[pl.type] && !g.findFreeSpot(pl.type, 0)) return uiStep(`place:${pl.type}:cancel`, 'place:cancel', { ...base, stepKey: null, label: 'No room yet' });
+  if (!pl.gift && resolve(g, { ...ui, placing: null }).build !== pl.type) {
+    return uiStep(`place:${pl.type}:own`, 'place:cancel', { ...base, gift: false, stepKey: null, pointer: false, label: `Placing ${def.name || ''}`.trim() });
   }
+  if (pl.valid === false) return mk(`place:${pl.type}:drag`, 'world', { world: 'ghost' }, { ...base, gesture: 'swipe' });
   return uiStep(`place:${pl.type}`, 'place:ok', base);
 }
 
@@ -1233,10 +1261,10 @@ function welcomeStep() {
 function resolve(g, ui) {
   if (guided(g) && !g.hasSeen('welcome')) return welcomeStep();
   if (ui.modal) return modalStep(g, ui.modal);
-  if (ui.placing) return placeStep(g, ui.placing);
+  if (ui.placing) return placeStep(g, ui, ui.placing);
   if (graduationPending(g)) return graduationStep(g);
   if (g.questDone()) return claimStep(g);
-  const it = pendingInterrupt(g, ui);
+  const it = ui.skipInterrupt ? null : pendingInterrupt(g, ui);
   if (it) return it;
   const q = g.currentQuest();
   const plan = PLANNERS[q.event] || PLANNERS.level;
@@ -1253,7 +1281,7 @@ function guidedLine(g, s) {
   switch (q.id) {
     case 'order1': return ui.startsWith('order:deliver') ? 'order1Panel' : 'order1';
     case 'coop': return ui === 'shop:buy:coop' ? 'coopShop' : 'coop';
-    case 'chickens': return ui === 'pen:buy' ? 'chickensPanel' : 'chickens';
+    case 'chickens': return ui === 'pen:buy' ? 'chickensPanel' : g.s.animals.some((a) => a.type === 'chicken') ? 'chickensMore' : 'chickens';
     case 'plow': return s.target?.world === 'ghostPlots' ? 'plowTiles' : 'plow';
     case 'bakery': return s.block?.kind === 'coins' ? 'bakeryCoins' : 'bakery';
     case 'bread': {
@@ -1300,7 +1328,12 @@ function finish(g, ui, s) {
   if (s.meanwhile) {
     const mw = { ...s.meanwhile, why: 'meanwhile' };
     const q = g.currentQuest();
-    if (gd && q.id === 'eggs' && mw.stepKey !== 'busy') { mw.stepKey = 'eggsMeanwhile'; mw.say = TUTORIAL.lines.eggsMeanwhile; } else if (mw.stepKey !== 'busy') { mw.stepKey = null; mw.say = null; }
+    // B10: the "tidy up" line comes when the finger reaches the weeds and stones (harvesting first keeps the goal's line)
+    if (mw.stepKey !== 'busy') {
+      const tidy = gd && q.id === 'eggs' && mw.action === 'clear';
+      mw.stepKey = tidy ? 'eggsMeanwhile' : null;
+      mw.say = tidy ? TUTORIAL.lines.eggsMeanwhile : null;
+    }
     out.meanwhile = mw;
   }
   const reveal = gd ? revealFor(g, [s, s.meanwhile]) : [];
@@ -1331,7 +1364,7 @@ function signature(game, ui, m) {
     Object.keys(t.seen || {}).length, game.s.settings?.hints, game.s.settings?.tapHarvest,
     p && p.id, p && p.tab, p && p.ref && typeof p.ref === 'object' ? tk(p.ref.x, p.ref.z) : p && p.ref, p && (p.age ?? 0) > PANEL_PATIENCE,
     pl && pl.type, pl && pl.valid, pl && pl.gift, ui.tool, ui.modal, ui.popover && tk(ui.popover.x, ui.popover.z),
-    ui.interrupt && ui.interrupt.key, ui.interrupt && ui.interrupt.item].join('|');
+    ui.interrupt && ui.interrupt.key, ui.interrupt && ui.interrupt.item, ui.skipInterrupt].join('|');
 }
 
 // The single next step for the current goal (see the header for the shape). opts.cache = false skips the memo.

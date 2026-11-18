@@ -47,6 +47,8 @@ export const GUIDE_KEY_PATTERNS = [
   // storage
   new RegExp(`^storage:tab:(${stores}|toolshed)$`),
   new RegExp(`^storage:(sellExtras|upgrade):(${stores})$`),
+  // one item: its card (selects it) and that item's "Sell 1" button
+  new RegExp(`^storage:(item|sell):(${items})$`),
   // today
   /^today:(gift|chore:\d+)$/,
   // farmhouse panel tabs

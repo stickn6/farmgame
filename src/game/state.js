@@ -50,7 +50,10 @@ export class Game extends Emitter {
     this.storage = opts.storage !== undefined ? opts.storage : (typeof localStorage !== 'undefined' ? localStorage : null);
     this.s = this.load() || this.newGame();
     this.rebuildOccupancy();
+    // no safety net while loading: nobody listens yet, so Mabel's line would be lost (the first HUD tick pays it)
+    this._booting = true;
     this.ensureOrders();
+    this._booting = false;
     this._saveTimer = null;
   }
 
@@ -446,12 +449,14 @@ export class Game extends Emitter {
     return earned;
   }
 
-  // one-tap relief when storage is full: sell everything above `keep` of each item (never materials)
-  sellExtras(id, keep = 10) {
+  // one-tap relief when storage is full: sell everything above `keep` of each item (never materials).
+  // floors: { item: qty } to keep more of (what the current goal, an order or the animals need)
+  sellExtras(id, keep = 10, floors = {}) {
     let earned = 0;
     for (const [item, n] of Object.entries(this.s.inventory)) {
-      if (this.storageOf(item) !== id || n <= keep) continue;
-      earned += this.sell(item, n - keep);
+      const k = Math.max(keep, floors[item] || 0);
+      if (this.storageOf(item) !== id || n <= k) continue;
+      earned += this.sell(item, n - k);
     }
     return earned;
   }
@@ -622,7 +627,7 @@ export class Game extends Emitter {
   // the tidiest free spot for a new building near the farm core: { x, z, rot } or null
   smartSpot(type, rot = 0, near = null) { return layout.smartSpot(this, type, rot, near); }
   // up to n grass tiles that grow the field neatly: [[x, z], …]
-  suggestPlowSpots(n = 2) { return layout.suggestPlowSpots(this, n); }
+  suggestPlowSpots(n = 2, opts = {}) { return layout.suggestPlowSpots(this, n, opts); }
 
   // ------------------------------------------------------------ mastery
   masteryStars(type) {
@@ -1087,7 +1092,7 @@ export class Game extends Emitter {
 
   checkSafetyNet() {
     const t = this.s.tutorial;
-    if (!t) return null;
+    if (!t || this._booting) return null;
     const { coins, cooldownH } = TUTORIAL.safetyNet;
     const now = this.now();
     if (t.net && now - t.net < cooldownH * 3600000) return null;
@@ -1617,6 +1622,8 @@ export class Game extends Emitter {
 
   checkQuest() {
     const q = this.currentQuest();
+    // chickens already fed count toward "Feed your chickens", and stay counted once their eggs are collected
+    if (q.event === 'feed') this.s.quest.progress = Math.max(this.s.quest.progress, this.questProgress());
     this.emit('quest', q);
     if (this.questDone() && !this.s.quest.notified) {
       this.s.quest.notified = true;

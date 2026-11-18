@@ -138,6 +138,10 @@
 @keyframes gDrop { from { translate: -50% -16px; opacity: 0; } }
 
 #guide.g-hud-modal .g-coach, #guide.g-hud-modal .g-toast, #guide.g-hud-modal .g-action, #guide.g-hud-modal .g-tag { visibility: hidden; }
+/* a panel or the seed popover is up: toasts and coach chips would sit on its title, ✕ or cards (hidden, they take no taps);
+   a line about that panel itself (.g-keep) sits over the dimmed top bar */
+#guide.g-hud-panel .g-toast:not(.g-keep), #guide.g-hud-panel .g-coach:not(.g-keep) { visibility: hidden; }
+#guide.g-hud-panel .g-toast.g-keep { top: 8px !important; }
 
 /* HUD toasts stay clear of a bottom-docked card */
 #app.g-card-low #hud .toasts { bottom: var(--g-toast-bottom, 180px); }

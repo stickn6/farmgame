@@ -117,7 +117,8 @@ export function smartSpot(game, type, rot = 0, near = null) {
 // 4-adjacent to soil, keeping a 1-tile path around buildings. Filling the field's bounding
 // box comes first, then growing along its longer side. Ties: larger x, then smaller z.
 // Each pick counts as soil for the next one, so the picks stay one connected patch.
-export function suggestPlowSpots(game, n = 2) {
+// anywhere: when no free tile touches the field (fenced in), start a new patch near the farm core instead.
+export function suggestPlowSpots(game, n = 2, { anywhere = false } = {}) {
   const room = Math.max(0, Math.min(n, game.plotCap() - game.plotCount()));
   const blocked = new Set();
   for (const o of game.s.objects) {
@@ -145,8 +146,9 @@ export function suggestPlowSpots(game, n = 2) {
           if (better(s, x, z, b)) b = { s, x, z };
         }
       }
-    } else {
-      // no field at all: start one near the farm core
+    }
+    if (!b && (!field.size || anywhere)) {
+      // no field at all (or none with room beside it): start one near the farm core
       const core = farmCore(game);
       for (let z = game.landLo(); z <= game.landHi(); z++) {
         for (let x = game.landLo(); x <= game.landHi(); x++) {

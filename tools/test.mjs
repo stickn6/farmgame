@@ -887,6 +887,74 @@ test('safety net: pays once when truly stuck, never within 24h or while anything
   assert.equal(fired, 2);
 });
 
+test('safety net: never while the Game is being built (nobody listens yet); the first HUD tick pays it, heard', () => {
+  const st = new MemStorage();
+  const g = new Game({ clock, storage: st });
+  g.s.coins = 0; g.s.inventory = {};
+  for (const soil of Object.values(g.s.soil)) soil.crop = null;
+  g.s.tutorial.net = null;
+  g.save();
+  const h = new Game({ clock, storage: st });
+  assert.equal(h.s.coins, 0, 'no payout while loading');
+  assert.ok(!h.s.tutorial.net);
+  let heard = 0;
+  h.on('safetyNet', () => heard++);
+  h.ensureOrders(); // the HUD's 1 Hz tick, after the guide subscribed
+  assert.equal(heard, 1);
+  assert.equal(h.s.coins, CFG.TUTORIAL.safetyNet.coins, 'same amount');
+});
+
+test('sellExtras keeps 10 of each, or more of what floors ask for (the guide\'s reserves)', () => {
+  const g = fresh();
+  g.s.inventory = { wheat: 40, carrot: 30, corn: 8 };
+  const coins = g.s.coins;
+  const earned = g.sellExtras('silo', 10, { wheat: 22, corn: 30 });
+  assert.deepEqual([g.count('wheat'), g.count('carrot'), g.count('corn')], [22, 10, 8]);
+  assert.equal(earned, 18 * CFG.ITEMS.wheat.price + 20 * CFG.ITEMS.carrot.price);
+  assert.equal(g.s.coins, coins + earned);
+  g.s.inventory.wheat = 40;
+  g.sellExtras('silo');
+  assert.equal(g.count('wheat'), 10, 'no floors: 10 of each, as before');
+});
+
+test('"Feed your chickens": chickens fed before it was current count, and collecting their eggs never undoes it', () => {
+  const g = fresh();
+  g.s.coins = 1e7; g.addXp(CFG.xpForLevel(2));
+  put(g, 'coop', ...g.findFreeSpot('coop'));
+  g.s.quest = { index: qIndex('chickens'), progress: 0, notified: false };
+  g.buyAnimal('chicken'); g.buyAnimal('chicken');
+  g.s.inventory = { wheat: 2 };
+  for (const a of g.s.animals) g.feedAnimal(a); // fed during "Buy 2 chickens"
+  let done = 0;
+  g.on('questComplete', () => done++);
+  assert.ok(g.claimQuest());
+  assert.equal(g.currentQuest().id, 'feed');
+  assert.ok(g.questDone(), 'already fed: done at once');
+  assert.equal(done, 1);
+  advance(CFG.ANIMALS.chicken.time + 1);
+  for (const a of g.s.animals) g.collectAnimal(a); // hungry again, no wheat left to re-feed
+  assert.equal(g.animalState(g.s.animals[0]), 'hungry');
+  assert.ok(g.questDone(), 'still done after collecting the eggs');
+  assert.ok(g.claimQuest(), 'Claim! still works');
+});
+
+test('plow spots: a field fenced in on every side gets none, unless anywhere (then a new patch near the farm)', () => {
+  const g = fresh();
+  g.s.coins = 1e6;
+  g.s.objects = g.s.objects.filter((o) => CFG.OBJECTS[o.type].kind !== 'debris');
+  g.rebuildOccupancy();
+  for (const k of Object.keys(g.s.soil)) {
+    const [x, z] = k.split(',').map(Number);
+    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) if (g.canPlace('fence', x + dx, z + dz, 0)) put(g, 'fence', x + dx, z + dz);
+  }
+  assert.deepEqual(g.suggestPlowSpots(2), []);
+  const spots = g.suggestPlowSpots(2, { anywhere: true });
+  assert.equal(spots.length, 2);
+  for (const [x, z] of spots) assert.ok(g.inLand(x, z) && !g.objectAt(x, z) && !g.soilAt(x, z), `free tile ${x},${z}`);
+  assert.equal(Math.abs(spots[0][0] - spots[1][0]) + Math.abs(spots[0][1] - spots[1][1]), 1, 'one connected patch');
+  assert.deepEqual(fresh().suggestPlowSpots(2, { anywhere: true }), fresh().suggestPlowSpots(2), 'unchanged when the field has room');
+});
+
 test('safety net never fires for the pacing bot', async () => {
   const { run } = await import('./sim.mjs');
   const P = Game.prototype, orig = P.checkSafetyNet, rnd = Math.random;
