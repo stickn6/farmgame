@@ -7,7 +7,7 @@
 //    field caps per level, storage capacity (upgraded with rare materials),
 //    building limits per level, and land expansion needing deeds.
 //  - Content is spread over levels 1-30 (every level unlocks something); levels 31+
-//    are reserved for future updates (see FUTURE_SLOTS at the bottom).
+//    hold the last album pages and are otherwise reserved for future updates (see FUTURE_SLOTS at the bottom).
 //  - Numbers were picked by a design panel and checked with tools/sim.mjs, which drives
 //    these exact rules with a bot: run `npm run sim` after changing anything.
 
@@ -190,10 +190,25 @@ export const OBJECTS = {
   balloon: { name: 'Hot Air Balloon', icon: '🎈', kind: 'decor', size: [2, 2], cost: 40000, level: 24 },
 
   // one-of-a-kind decorations (level 99: never sold, never in the Shop list): free gifts that refund nothing.
-  // model: whose 3D model they reuse; tint: a recolour of it ('gold' = GOLD); charm: for Prettiest Farm
+  // model: whose 3D model they reuse; tint: a recolour of it ('gold' = GOLD; tintDesat: how far its own colours fade to
+  // grey first, tintMetal / tintRough: a metal look); charm: for Prettiest Farm
   mailbox: { name: 'Mailbox', icon: '📮', kind: 'decor', size: [1, 1], cost: 0, level: 99, charm: 40, desc: 'The flag goes up when a parcel waits.' },
   goldscarecrow: { name: 'Golden Scarecrow', icon: '🧑‍🌾', kind: 'decor', model: 'scarecrow', tint: 'gold', size: [1, 1], cost: 0, level: 99, charm: 75 },
   goldlamp: { name: 'Golden Lamp Post', icon: '🏮', kind: 'decor', model: 'lamp', tint: 'gold', size: [1, 1], cost: 0, level: 99, charm: 75 },
+  // Mabel's album page prizes: recoloured versions of real decorations (never sold), and the Curio Cabinet
+  bluebath: { name: 'Bluebird Bath', icon: '🐦', kind: 'decor', model: 'birdbath', tint: '#8fc9ff', size: [1, 1], cost: 0, level: 99, charm: 60, desc: 'From Mabel\'s album: Meadow Finds.' },
+  copperwell: { name: 'Copper Well', icon: '🪣', kind: 'decor', model: 'well', tint: '#f0a868', size: [2, 2], cost: 0, level: 99, charm: 55, desc: 'From Mabel\'s album: Barnyard Bits.' },
+  rosepicnic: { name: 'Rose Picnic Table', icon: '🧺', kind: 'decor', model: 'picnic', tint: '#ffb3b3', size: [2, 2], cost: 0, level: 99, charm: 90, desc: 'From Mabel\'s album: Grandma\'s Kitchen.' },
+  blossomarch: { name: 'Blossom Arch', icon: '💐', kind: 'decor', model: 'flowerarch', tint: '#ffc0d9', size: [2, 1], cost: 0, level: 99, charm: 185, desc: 'From Mabel\'s album: Neighbourly Notes.' },
+  harvestmill: { name: 'Harvest Windmill', icon: '🌬️', kind: 'decor', model: 'windmill', tint: '#ffbe7a', size: [3, 3], cost: 0, level: 99, charm: 120, desc: 'From Mabel\'s album: Orchard Treasures.' },
+  mossfountain: { name: 'Mossy Fountain', icon: '⛲', kind: 'decor', model: 'fountain', tint: '#b5e8a8', size: [2, 2], cost: 0, level: 99, charm: 300, desc: 'From Mabel\'s album: Market Day.' },
+  lilacgazebo: { name: 'Lilac Gazebo', icon: '🛖', kind: 'decor', model: 'gazebo', tint: '#d9c6ff', size: [3, 3], cost: 0, level: 99, charm: 455, desc: 'From Mabel\'s album: Mill Pond.' },
+  silverrooster: { name: 'Silver Rooster', icon: '🐓', kind: 'decor', model: 'statue', tint: '#e3e9f0', tintDesat: 1, tintMetal: 0.2, tintRough: 0.35, size: [1, 1], cost: 0, level: 99, charm: 680, desc: 'From Mabel\'s album: Mabel\'s Attic.' },
+  curio: { name: 'Curio Cabinet', icon: '🗄️', kind: 'decor', size: [2, 1], cost: 0, level: 99, charm: 300, desc: 'Mabel\'s keepsakes on show: the launch album is complete.' },
+  skyballoon: { name: 'Sky Balloon', icon: '🎈', kind: 'decor', model: 'balloon', tint: '#bfe3ff', tintDesat: 0.85, size: [2, 2], cost: 0, level: 99, charm: 960, desc: 'From Mabel\'s album: Family Heirlooms.' },
+  // Prettiest Farm ribbon prizes (ranks 5 and 15)
+  blossomoak: { name: 'Blossom Oak', icon: '🌳', kind: 'decor', model: 'oak', tint: '#ffc7dd', tintDesat: 0.8, size: [1, 1], cost: 0, level: 99, charm: 90 },
+  frostpine: { name: 'Frosted Pine', icon: '🌲', kind: 'decor', model: 'pine', tint: '#dff2ff', tintDesat: 0.7, size: [1, 1], cost: 0, level: 99, charm: 90 },
 
   // starter debris on a new farm ("gone a bit wild"): never sold or unlocked (level 99), cleared
   // by tapping for a tiny one-off reward. Finite: 12 pieces, 🪙20 ⭐14 in total, no materials.
@@ -507,6 +522,8 @@ export function unlocksAtLevel(level) {
   for (const q of QUEUE_SLOTS) if (q.level === level) list.push({ icon: '➕', name: 'Production slot' });
   if (ORDERS.slots(level) > ORDERS.slots(level - 1)) list.push({ icon: '🚚', name: 'Order slot' });
   if (DROPS.minLevel === level) list.push({ icon: '🧰', name: 'Building materials' });
+  // Mabel's album: a new page (page 1 opens with the first keepsake, not at a level)
+  for (const p of ALBUM.pages) if (p.level > 0 && p.level === level) list.push({ icon: '📖', name: `Album page: ${p.name}` });
   return list;
 }
 
@@ -732,6 +749,10 @@ export const FEATURE_TIPS = {
   28: 'Caramel Corn — corn has never been so fancy.',
   29: 'Cozy Quilts need a shirt and a sweater — the ultimate gift.',
   30: 'The Master Farmhouse project is open. You\'re a true farmer, dear!',
+  // past L30: the last album pages (31 is shared with gilding, added with Prettiest Farm)
+  35: 'A new album page: Starry Nights 🔭 — keepsakes turn up as you farm.',
+  37: 'A new album page: Festival Keepsakes 🎠 — fill it for a gilding voucher!',
+  39: 'The last album page: Grand Champion 🥇 — fill it to become Valley Historian!',
 };
 
 // ---------------------------------------------------------------- camera (turn & tilt)
@@ -750,8 +771,9 @@ export const CAMERA = {
   zoomTilt: { enabled: false, per: 0.004, lo: -0.05, hi: 0.08 }, // optional polish, shipped OFF
 };
 
-// the gold recolour of the exclusive golden decorations (and, later, gilding)
-export const GOLD = { color: '#ffd54a', metalness: 0.35, roughness: 0.45 };
+// the gold recolour of the exclusive golden decorations (and, later, gilding); desat / lift: the model's own colours
+// fade most of the way to a brightened grey first, so the whole piece reads as bright gold
+export const GOLD = { color: '#ffd54a', metalness: 0.35, roughness: 0.45, desat: 0.8, lift: 0.5 };
 
 // ---------------------------------------------------------------- the Post (timed gifts)
 // Parcel n (n = parcels opened so far) is ready at s.post.nextAt: 5 min after the farm starts, then each next one is
@@ -838,7 +860,7 @@ export const KEEPSAKES = {};
 for (const p of ALBUM.pages) for (const [item, icon, name] of p.items) KEEPSAKES[`${p.id}:${item}`] = { id: `${p.id}:${item}`, page: p.id, item, icon, name };
 
 // Levels where future content can slot in without rebalancing (keep these in mind when adding features).
-// Planned next: seasons & festivals (L32), bigger map (L33), fishing (L34), farm kitchen (L36),
-// pets (L38), foraging & workshop (L40). Rules of thumb: one visible unlock per level, a major
-// unlock every 2-3 levels, 2nd copies at unlock+8, and price new things with the formulas above.
+// 31/35/37/39 hold album pages (31 also gilding). Planned next: seasons 32, map 33, fishing 34, kitchen 36,
+// pets 38, foraging 40. Rules of thumb: one visible unlock per level, a major unlock every 2-3 levels,
+// 2nd copies at unlock+8, and price new things with the formulas above.
 export const FUTURE_SLOTS = [31, 32, 33, 34, 35, 36, 37, 38, 39, 40];

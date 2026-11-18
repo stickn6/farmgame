@@ -1,12 +1,12 @@
 import * as THREE from 'three';
 import './style.css';
-import { ITEMS, CROPS, ANIMALS, OBJECTS, STORAGE, PROJECTS, TUTORIAL, CAMERA } from './game/config.js';
+import { ITEMS, CROPS, ANIMALS, OBJECTS, STORAGE, PROJECTS, TUTORIAL, CAMERA, KEEPSAKES, ALBUM } from './game/config.js';
 import { isHome } from './game/camera.js';
 import { Game } from './game/state.js';
 import { seedList, plantCap, placementSpot } from './game/guide.js';
 import { farmCore } from './game/layout.js';
 import { World, tileToWorld, worldToTile } from './game/world.js';
-import { FarmView, ObjectView, AnimalView, DogView, VisitorView, WagonView, ProjectView, PROJECT_SITES, Ghost, TileCursor, objectCenter } from './game/views.js';
+import { FarmView, ObjectView, AnimalView, DogView, VisitorView, WagonView, ProjectView, PROJECT_SITES, Ghost, TileCursor, objectCenter, tintFor } from './game/views.js';
 import { Effects } from './game/effects.js';
 import { Audio } from './game/audio.js';
 import { Input } from './game/input.js';
@@ -84,6 +84,8 @@ class Controller {
       this.hud.toast(finished ? `${def.icon} ${def.name} is finished! ${def.perk} 🎉` : `${def.icon} ${def.name}: stage ${stage} complete! +⭐${xp} +💎${gems}`, 'good');
     });
     this.game.on('mastery', () => { if (this.tool === 'seed') this.hud.renderSeedBar(); });
+    // Mabel's album: a keepsake turned up (while farming, or in a parcel)
+    this.game.on('keepsake', (e) => this.keepsakeFound(e));
 
     // a brand-new farm opens high over the farm and the guide glides down to the field;
     // otherwise frame the farmhouse & fields
@@ -689,6 +691,66 @@ class Controller {
     return r;
   }
 
+  // ------------------------------------------------------------------ Mabel's album (§3.7)
+  // A find: a toast with the page count, a sparkle where it turned up, the keepsake flies to 🏆, a chime. A parcel's
+  // keepsake already flips, sparkles and flies in the parcel's reveal. Toasts sit under panels and modals, so the
+  // words wait until the screen is free (an order or a wagon crate is filled from its panel).
+  keepsakeFound(e) {
+    const k = KEEPSAKES[e.id];
+    const page = ALBUM.pages.find((p) => p.id === e.page);
+    if (!k || !page) return;
+    const text = `🔖 Keepsake! ${k.icon} ${k.name} — ${page.name} ${e.pageFound}/${page.items.length}`;
+    const say = () => {
+      this.hud.toast(text, 'good');
+      if (!e.pageDone) return;
+      this.hud.confetti(60);
+      this.hud.toast(`📖 ${page.name} complete! Claim your prize in 🏆`, 'good');
+      const b = this.hud.trophyBtn;
+      b.classList.remove('bump'); void b.offsetWidth; b.classList.add('bump');
+    };
+    const t0 = performance.now();
+    const covered = () => !!(this.hud.topModal() || this.hud.panel);
+    const later = () => {
+      if (covered() && performance.now() - t0 < 60000) { setTimeout(later, 300); return; }
+      say();
+    };
+    if (e.source === 'post' || covered()) setTimeout(later, 300); else say();
+    if (e.source === 'post') return;
+    this.audio.play('quest');
+    const pos = this.keepsakePos(e.at);
+    const trophy = this.hud.flyTarget(this.hud.trophyBtn);
+    if (pos) {
+      this.effects.burst(pos.clone().setY(pos.y + 0.4), ['#ffe08a', '#ffffff', '#ffd54a', '#ffb3d1'], 16, 0.9);
+      this.effects.floatText(pos.clone().setY(pos.y + 1.2), '🔖', 'info');
+      this.effects.fly(pos.clone().setY(pos.y + 0.8), k.icon, trophy, { delay: 300 });
+    } else {
+      this.effects.flyFrom(window.innerWidth / 2, window.innerHeight / 2, k.icon, trophy, { delay: 300 });
+    }
+  }
+
+  // where a find turned up: its tile, building or animal (null → the screen centre)
+  keepsakePos(at) {
+    const g = this.game;
+    if (!at) return null;
+    if (at.animal) { const a = this.animals.map.get(at.animal); if (a) return a.obj.position.clone(); }
+    if (Number.isFinite(at.x) && Number.isFinite(at.z)) return tileToWorld(at.x, at.z);
+    const o = at.obj && g.objById.get(at.obj);
+    if (o) return objectCenter(g, o).setY(0.6);
+    return null;
+  }
+
+  // Treasures → Album → Claim prize!: the model pays (gems, the decoration to place); the panel closes, the
+  // chest opens through the guide queue, then each decoration is put up (the page's, then the Curio Cabinet)
+  claimAlbumPage(id) {
+    const r = this.game.claimAlbumPage(id);
+    if (!r) return null;
+    this.audio.play('click');
+    this.hud.closePanel();
+    this.guide.albumPrize(r);
+    this.hud.refreshBadges();
+    return r;
+  }
+
   claimQuest() {
     const q = this.game.claimQuest();
     if (!q) return;
@@ -726,7 +788,7 @@ class Controller {
     this.placing = { type, rot, x: spot.x, z: spot.z, moveId, gift };
     if (existing) { this.objects.setHidden(moveId, true); this.animals.setHomeHidden(moveId, true); }
     this.tool = 'hand';
-    this.ghost.show(OBJECTS[type].kind === 'tree' ? `tree:${OBJECTS[type].model}:${existing ? this.objects.treeVisual(existing) : 'sapling'}` : (OBJECTS[type].model || type), type);
+    this.ghost.show(OBJECTS[type].kind === 'tree' ? `tree:${OBJECTS[type].model}:${existing ? this.objects.treeVisual(existing) : 'sapling'}` : (OBJECTS[type].model || type), type, existing ? tintFor(existing) : undefined);
     this.cursor.hide();
     this.hud.showPlaceBar(type, existing || gift ? 0 : g.objectCost(type), { gift });
     this.updateGhost();

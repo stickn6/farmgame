@@ -81,10 +81,11 @@ const dayNumber = (ms) => { const d = new Date(ms); return Math.floor((ms - d.ge
 export class Game extends Emitter {
   // opts.clock: () => ms timestamp (lets the simulator run at accelerated time)
   // opts.storage: localStorage-like object, or null to disable persistence
-  // opts.features: { post, album, charm } (all on by default; the sim's --features off A/B turns them off)
+  // opts.features: { post, album, charm } (the sim's --features off A/B turns them off). charm (Prettiest Farm:
+  // charm, ribbons, gilding) is off until it ships: until then a gilding voucher is paid as 💎15 instead.
   constructor(opts = {}) {
     super();
-    this.features = { post: true, album: true, charm: true, ...(opts.features || {}) };
+    this.features = { post: true, album: true, charm: false, ...(opts.features || {}) };
     this.granted = {}; // source → what grant() paid out this session (not saved): the sim and tests read it
     this.clock = opts.clock || (() => Date.now());
     this.storage = opts.storage !== undefined ? opts.storage : (typeof localStorage !== 'undefined' ? localStorage : null);
@@ -685,7 +686,8 @@ export class Game extends Emitter {
     this.emit('soil', { x, z, harvested: type });
     this.progressQuest('harvest', type, qty);
     const drop = this.rollDrop('harvest', c.xp);
-    return { item: type, qty, xp: c.xp, drop };
+    const keepsake = this.rollKeepsake('crop', c.xp, { x, z });
+    return { item: type, qty, xp: c.xp, drop, keepsake };
   }
 
   clearSoil(x, z) {
@@ -860,8 +862,9 @@ export class Game extends Emitter {
     this.progressQuest('fruit', def.fruit, def.yield);
     this.emit('treeChanged', o);
     const drop = this.rollDrop('harvest', def.harvestXp);
+    const keepsake = this.rollKeepsake('fruit', def.harvestXp, { obj: o.id });
     this.saveSoon();
-    return { item: def.fruit, qty: def.yield, xp: def.harvestXp, drop, dead: this.treeState(o) === 'dead' };
+    return { item: def.fruit, qty: def.yield, xp: def.harvestXp, drop, keepsake, dead: this.treeState(o) === 'dead' };
   }
 
   // ------------------------------------------------------------ animals
@@ -942,9 +945,10 @@ export class Game extends Emitter {
     this.emit('animalChanged', a);
     this.progressQuest('collect', def.product, 1);
     const drop = this.rollDrop('collect', def.xp);
+    const keepsake = this.rollKeepsake('animal', def.xp, { animal: a.id, obj: a.home });
     // animals that don't need food (bees) start their next cycle right away
     if (!def.food) this.feedAnimal(a);
-    return { item: def.product, qty: 1, xp: def.xp, drop };
+    return { item: def.product, qty: 1, xp: def.xp, drop, keepsake };
   }
 
   // ------------------------------------------------------------ production
@@ -997,8 +1001,9 @@ export class Game extends Emitter {
     o.jobs = o.jobs.filter((j) => { if (removed < collected && now >= j.endAt) { removed++; return false; } return true; });
     this.addXp(xp);
     const drop = this.rollDrop('produce', xp);
+    const keepsake = this.rollKeepsake('workshop', xp, { obj: o.id });
     this.emit('factoryChanged', o);
-    return { got, xp, drop };
+    return { got, xp, drop, keepsake };
   }
 
   // ------------------------------------------------------------ gems / speed-ups
@@ -1194,6 +1199,7 @@ export class Game extends Emitter {
     const idx = this.s.orders.indexOf(o);
     this.s.orders[idx] = { id: this.s.nextId++, waitUntil: this.now() + ORDERS.refill * 1000 };
     const drop = this.rollDrop('order', o.xp);
+    this.rollKeepsake('order', o.xp, { obj: this.s.objects.find((x) => x.type === 'orderboard')?.id });
     this.emit('orderDone', { ...o, drop });
     this.emit('orders', this.s.orders);
     this.progressQuest('order', null, 1);
@@ -1296,6 +1302,7 @@ export class Game extends Emitter {
     const gain = 1 + (npc && npc.likes.includes(ITEMS[v.item].cat) ? 1 : 0);
     const hearts = this.addHearts(v.npc, gain);
     const drop = this.rollDrop('visitor', v.xp);
+    this.rollKeepsake('visitor', v.xp, { visitor: v.id });
     this.emit('visitorServed', { ...v, drop, hearts, gain });
     this.emit('visitors', this.s.visitors);
     this.progressQuest('visitor', null, 1);
@@ -1440,6 +1447,7 @@ export class Game extends Emitter {
     c.filled = true;
     this.addCoins(c.coins);
     this.addXp(c.xp);
+    this.rollKeepsake('wagon', c.xp, { wagon: true }); // (fillCrate has no material drop)
     this.progressQuest('crate', null, 1);
     let bonus = null;
     if (w.crates.every((x) => x.filled)) {
@@ -1720,8 +1728,46 @@ export class Game extends Emitter {
     return r;
   }
 
-  // ------------------------------------------------------------ the album (what the Post needs of it)
+  // ------------------------------------------------------------ Mabel's Keepsake Album (§3)
+  // 72 keepsakes on 12 pages of 6. The album opens with the first keepsake (Kip's clover in parcel #3, the office
+  // parcel, or — for a farm that never opens parcels — the first eligible action from level 8). Page 1 opens with
+  // it, the others at their level. Finds never repeat: every pick is a missing piece, drawn with rand().
   albumOpen() { return !!this.s.album?.open; }
+
+  albumPage(id) { return ALBUM.pages.find((p) => p.id === id) || null; }
+
+  // a page is open once you reach its level (page 1, level 0, with the album)
+  albumPageOpen(p) { return this.s.level >= (p.level || 0); }
+
+  albumMissing(p) {
+    const have = this.s.album.have;
+    return p.items.map(([it]) => `${p.id}:${it}`).filter((k) => !have[k]);
+  }
+
+  // Where a keepsake goes. A natural find from src: the earliest open page that wants src (or wants anything) and
+  // still misses a piece, else the earliest open incomplete page. A parcel's (src null): the earliest open
+  // incomplete page, so the oldest straggler fills first. → the page, or null when every open page is full.
+  albumRoute(src = null) {
+    const open = ALBUM.pages.filter((p) => this.albumPageOpen(p) && this.albumMissing(p).length);
+    return (src && open.find((p) => !p.src || p.src.includes(src))) || open[0] || null;
+  }
+
+  // a keepsake is found: record it (fresh until its page is viewed), open the album, tell the UI
+  // at: where it turned up, for the sparkle ({ x, z } a tile · obj · animal · visitor · wagon; none for parcels)
+  recordKeepsake(id, src, at = null) {
+    const a = this.s.album;
+    a.have[id] = this.now();
+    a.open = true;
+    if (!a.fresh.includes(id)) a.fresh.push(id);
+    this.bumpStat('keepsakes');
+    const k = KEEPSAKES[id];
+    const page = this.albumPage(k.page);
+    const pageFound = page.items.filter(([it]) => a.have[`${page.id}:${it}`]).length;
+    this.emit('keepsake', { id, page: page.id, source: src, pageFound, pageDone: pageFound >= page.items.length, at });
+    this.emit('album', a);
+    this.saveSoon();
+    return id;
+  }
 
   // A keepsake from a parcel (or a fixed one, e.g. Kip's clover). Never a duplicate: a fixed id you already have, or
   // none given, picks a missing one on the earliest open page that still has gaps (rand()). Opens the album.
@@ -1731,24 +1777,113 @@ export class Game extends Emitter {
     const a = this.s.album;
     let pick = id && KEEPSAKES[id] && !a.have[id] ? id : null;
     if (!pick) {
-      for (const p of ALBUM.pages) {
-        if (this.s.level < p.level) continue;
-        const missing = p.items.map(([it]) => `${p.id}:${it}`).filter((k) => !a.have[k]);
-        if (missing.length) { pick = missing[Math.floor(this.rand() * missing.length)]; break; }
-      }
+      const page = this.albumRoute(null);
+      if (!page) return null;
+      const missing = this.albumMissing(page);
+      pick = missing[Math.floor(this.rand() * missing.length)];
     }
-    if (!pick) return null;
-    a.have[pick] = this.now();
-    a.open = true;
-    a.fresh.push(pick);
-    this.bumpStat('keepsakes');
-    const k = KEEPSAKES[pick];
-    const page = ALBUM.pages.find((p) => p.id === k.page);
-    const pageFound = page.items.filter(([it]) => a.have[`${page.id}:${it}`]).length;
-    this.emit('keepsake', { id: pick, page: page.id, source: src, pageFound, pageDone: pageFound >= page.items.length });
+    return this.recordKeepsake(pick, src, null);
+  }
+
+  // A find while farming (§3.3), right after the material roll of the 7 actions (crop, fruit, animal, workshop,
+  // order, visitor, wagon): chance xp / D(L) (≤ 0.5), with a pity meter that guarantees one at 1.5·D(L), so
+  // spamming quick crops can't farm keepsakes. No roll (and no meter) while the album is closed or every open
+  // page is full. A farm reaching level 8 with the album still closed is primed: its next action finds one.
+  // → the keepsake id, or null
+  rollKeepsake(src, xp = 0, at = null) {
+    if (!this.features.album || !(xp > 0)) return null;
+    const a = this.s.album;
+    const D = ALBUM.divisor(this.s.level);
+    // (not while the office parcel waits: a farm from before the Post opens it with that parcel's clover)
+    if (!a.open && !a.primed && this.s.level >= ALBUM.openLevel && !this.s.post?.office) {
+      a.primed = true;
+      a.open = true;
+      a.meter = ALBUM.pity * D;
+    }
+    if (!a.open) return null;
+    const page = this.albumRoute(src);
+    if (!page) return null;
+    a.meter = (a.meter || 0) + xp;
+    const chance = a.meter >= ALBUM.pity * D ? 1 : Math.min(ALBUM.maxChance, xp / D);
+    if (this.rand() >= chance) return null;
+    a.meter = 0;
+    const missing = this.albumMissing(page);
+    return this.recordKeepsake(missing[Math.floor(this.rand() * missing.length)], src, at);
+  }
+
+  // { open, found, total, ready (pages to claim), launch, all, pages: [{ id, name, icon, level, locked, have: [ids],
+  //   found, complete, ready, claimed, fresh: [ids] }] }
+  albumStatus() {
+    const a = this.s.album;
+    let found = 0, ready = 0;
+    const pages = ALBUM.pages.map((p) => {
+      const ids = p.items.map(([it]) => `${p.id}:${it}`);
+      const have = ids.filter((k) => a.have[k]);
+      const complete = have.length === ids.length;
+      const claimed = !!a.claimed[p.id];
+      const pageReady = this.features.album && complete && !claimed;
+      found += have.length;
+      if (pageReady) ready++;
+      return { id: p.id, name: p.name, icon: p.icon, level: p.level || 0, locked: !this.albumPageOpen(p), have, found: have.length,
+        complete, ready: pageReady, claimed, fresh: a.fresh.filter((k) => ids.includes(k)) };
+    });
+    return { open: !!a.open, found, total: Object.keys(KEEPSAKES).length, ready, launch: !!a.launch, all: !!a.all, pages };
+  }
+
+  // [pageId] of complete pages whose prize waits
+  albumPagesReady() {
+    if (!this.features.album) return [];
+    const a = this.s.album;
+    return ALBUM.pages.filter((p) => !a.claimed[p.id] && !this.albumMissing(p).length).map((p) => p.id);
+  }
+
+  // Claim a complete page's prize through grant('album'): gems and a one-of-a-kind decoration (to s.gifts), or gilding
+  // vouchers (💎15 each while Prettiest Farm is off). Claiming page 8's makes the launch album (pages 1–8): 💎10, the
+  // Curio Cabinet and "Keeper of Keepsakes"; the last of all 12 pages adds "Valley Historian".
+  // → null | { id, gems, gift, voucher, tiles, launch: { gems, gift, title, tiles } | null, title: string | null }
+  claimAlbumPage(id) {
+    if (!this.features.album) return null;
+    const p = this.albumPage(id);
+    const a = this.s.album;
+    if (!p || a.claimed[id] || this.albumMissing(p).length) return null;
+    a.claimed[id] = this.now();
+    const prize = p.prize || {};
+    const tiles = this.grant('album', { gems: prize.gems, gift: prize.gift, voucher: prize.voucher });
+    const r = { id, gems: prize.gems || 0, gift: prize.gift && OBJECTS[prize.gift] ? prize.gift : null, voucher: prize.voucher || 0, tiles, launch: null, title: null };
+    const done = (list) => list.every((q) => a.claimed[q.id]);
+    if (!a.launch && done(ALBUM.pages.slice(0, ALBUM.launchPages))) {
+      a.launch = true;
+      const L = ALBUM.launch;
+      const gift = OBJECTS[L.gift] ? L.gift : null;
+      // (without the cabinet: 💎10 more instead)
+      const lt = this.grant('album', { gems: L.gems + (gift ? 0 : 10), gift });
+      this.addTitle(L.title);
+      r.launch = { gems: L.gems + (gift ? 0 : 10), gift, title: L.title, tiles: lt };
+      r.title = L.title;
+    }
+    if (!a.all && done(ALBUM.pages)) {
+      a.all = true;
+      this.addTitle(ALBUM.all.title);
+      r.title = ALBUM.all.title;
+    }
+    this.emit('albumPage', r);
     this.emit('album', a);
     this.saveSoon();
-    return pick;
+    return r;
+  }
+
+  // the HUD showed this page: its finds are no longer NEW
+  albumSeen(pageId) {
+    const a = this.s.album;
+    const before = a.fresh.length;
+    a.fresh = a.fresh.filter((k) => KEEPSAKES[k]?.page !== pageId);
+    if (a.fresh.length !== before) { this.emit('album', a); this.saveSoon(); }
+  }
+
+  // titles earned (the album's, later the ribbons'), shown with the farm
+  addTitle(title) {
+    const list = (this.s.charm.titles ||= []);
+    if (title && !list.includes(title)) list.push(title);
   }
 
   // ------------------------------------------------------------ achievements

@@ -44,22 +44,56 @@ const defOf = (o) => OBJECTS[o.type] || {};
 
 // Recoloured decorations (def.tint: a colour, or 'gold' = GOLD with its metal look): each material is cloned once
 // per colour; the vertex colours multiply with it. Glowing (lamp glass) and glass parts keep their own look.
+// The one tint path of the game: album exclusives, the golden parcel decor and (o.gilded) gilding all use it.
+// desat (def.tintDesat, GOLD.desat): how far the model's own colours fade to grey first, so a recolour can
+// really change them (a gold rooster turned silver, a rainbow balloon turned sky blue).
 const tintCache = new Map();
 export function tintOf(type) {
-  const t = OBJECTS[type]?.tint;
-  return t === 'gold' ? GOLD : t ? { color: t } : null;
+  const d = OBJECTS[type];
+  const t = d?.tint;
+  return t === 'gold' ? GOLD : t ? { color: t, desat: d.tintDesat || 0, metalness: d.tintMetal, roughness: d.tintRough } : null;
 }
+// the vertex colours fade toward their own (slightly lifted) brightness by `desat` before the tint multiplies them,
+// so dark leaves or a gold statue take a light recolour (frost, blossom, silver) instead of turning muddy
+function desaturate(mat, desat, lift = 0.35 * desat) {
+  const k = Math.round(desat * 100) / 100;
+  lift = (Math.round(lift * 100) / 100).toFixed(2);
+  mat.onBeforeCompile = (sh) => {
+    sh.fragmentShader = sh.fragmentShader.replace('#include <color_fragment>', `#if defined( USE_COLOR ) || defined( USE_COLOR_ALPHA )
+      float tintL = mix( dot( vColor.rgb, vec3( 0.299, 0.587, 0.114 ) ), 1.0, ${lift} );
+      diffuseColor *= vec4( mix( vColor.rgb, vec3( tintL ), ${k.toFixed(2)} ), vColor.a );
+    #endif`);
+  };
+  mat.customProgramCacheKey = () => `desat${k}|${lift}`;
+}
+// a copy of a (maybe tinted) material that keeps its shader tweak (Material.clone drops onBeforeCompile)
+export function cloneMaterial(m) {
+  const c = m.clone();
+  if (m.userData.desat) desaturate(c, m.userData.desat, m.userData.lift);
+  return c;
+}
+// a placed object's tint: gilded → gold, else its type's recolour (or none)
+export function tintFor(o) {
+  return o?.gilded ? GOLD : tintOf(o?.type);
+}
+// compares tints (a re-add is needed when it changes, e.g. on gilding)
+const tintKey = (t) => (t ? `${t.color}|${t.metalness ?? ''}|${t.desat || 0}` : '');
 export function applyTint(obj, tint) {
   if (!tint) return obj;
   obj.traverse((m) => {
     if (!m.isMesh || !m.material || m.material === MATS.glow || m.material === MATS.glass) return;
-    const k = `${m.material.uuid}|${tint.color}|${tint.metalness ?? ''}|${tint.roughness ?? ''}`;
+    const k = `${m.material.uuid}|${tint.color}|${tint.metalness ?? ''}|${tint.roughness ?? ''}|${tint.desat || 0}|${tint.lift ?? ''}`;
     let mat = tintCache.get(k);
     if (!mat) {
       mat = m.material.clone();
       mat.color = new THREE.Color(tint.color);
       if (tint.metalness != null) mat.metalness = tint.metalness;
       if (tint.roughness != null) mat.roughness = tint.roughness;
+      if (tint.desat > 0 && mat.vertexColors) {
+        const lift = tint.lift ?? 0.35 * tint.desat;
+        mat.userData = { ...mat.userData, desat: tint.desat, lift };
+        desaturate(mat, tint.desat, lift);
+      }
       tintCache.set(k, mat);
     }
     m.material = mat;
@@ -173,6 +207,14 @@ export class ObjectView {
     game.on('objectAdded', (o) => this.add(o, true));
     game.on('objectRemoved', (o) => this.remove(o.id));
     game.on('objectMoved', ({ o }) => this.place(o));
+    // a changed look (e.g. gilding): re-add it when its model or tint differs, with a little bounce
+    game.on('objectChanged', (o) => {
+      const e = this.map.get(o.id);
+      if (!e || (e.key === this.modelKey(o) && e.tint === tintKey(tintFor(o)))) return;
+      this.add(o, false);
+      const n = this.map.get(o.id);
+      if (n) n.pop = 0.55;
+    });
     this.smoke = [];
     this.dying = []; // removed objects shrinking away
     this.time = 0;
@@ -205,13 +247,14 @@ export class ObjectView {
 
   add(o, animate) {
     const key = this.modelKey(o);
-    const obj = applyTint(makeObject(key), tintOf(o.type));
+    const tint = tintFor(o);
+    const obj = applyTint(makeObject(key), tint);
     obj.userData.objectId = o.id;
     if (defOf(o).flat) obj.traverse((m) => { if (m.isMesh) m.castShadow = false; });
     this.scene.add(obj);
     const prev = this.map.get(o.id);
     if (prev) { this.scene.remove(prev.obj); obj.visible = prev.obj.visible; }
-    const e = { obj, o, key, pop: animate ? 0 : 1, smokeTimer: 0 };
+    const e = { obj, o, key, tint: tintKey(tint), pop: animate ? 0 : 1, smokeTimer: 0 };
     this.map.set(o.id, e);
     this.place(o);
     if (animate) obj.scale.setScalar(0.01);
@@ -673,15 +716,16 @@ export class Ghost {
   }
 
   // modelKey: what to draw (e.g. OBJECTS[type].model || type, or a tree stage key); type: footprint/rules type.
-  // Works for every placeable kind, including gift decor (scarecrow, birdbath, picnic).
-  show(modelKey, type = modelKey) {
+  // Works for every placeable kind, including gift decor (scarecrow, birdbath, picnic). tint: the type's recolour,
+  // or a moved object's own (tintFor(o), e.g. gilded).
+  show(modelKey, type = modelKey, tint = tintOf(type)) {
     this.hide();
     this.type = type;
     this.height = modelHeight(modelKey);
-    this.obj = applyTint(makeObject(modelKey, { shadow: false }), tintOf(type));
+    this.obj = applyTint(makeObject(modelKey, { shadow: false }), tint);
     this.obj.traverse((m) => {
       if (m.isMesh) {
-        m.material = m.material.clone();
+        m.material = cloneMaterial(m.material);
         m.material.transparent = true;
         m.material.opacity = 0.8;
       }

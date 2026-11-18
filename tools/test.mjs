@@ -1639,6 +1639,362 @@ test('save round-trip: post, album, charm, rng and settings.cam', () => {
   assert.equal(g2.rand(), g.rand(), 'the RNG carries on');
 });
 
+// ---------------------------------------------------------------- Mabel's Keepsake Album (§3)
+const pageIds = (id) => CFG.ALBUM.pages.find((p) => p.id === id).items.map(([it]) => `${id}:${it}`);
+const fillPage = (g, id) => { for (const k of pageIds(id)) g.s.album.have[k] ||= 1; g.s.album.open = true; };
+const albumAt = (L) => { const g = fresh(); g.s.level = L; g.s.xp = CFG.xpForLevel(L); return g; };
+const mats = (g) => Object.entries(g.s.inventory).filter(([i]) => CFG.ITEMS[i].cat === 'material').reduce((n, [, k]) => n + k, 0);
+
+test('album: closed → no rolls; the first keepsake opens it; level 8 primes it so the first action finds one', () => {
+  const g = albumAt(5);
+  for (let i = 0; i < 500; i++) assert.equal(g.rollKeepsake('crop', 1000), null);
+  assert.equal(g.s.album.meter, 0, 'no meter while closed');
+  assert.ok(!g.albumOpen());
+  // a parcel's clover opens it
+  assert.equal(g.giveKeepsake('post', 'meadow:clover'), 'meadow:clover');
+  assert.ok(g.albumOpen() && g.s.album.have['meadow:clover']);
+  assert.deepEqual(g.s.album.fresh, ['meadow:clover']);
+  assert.equal(g.stat('keepsakes'), 1);
+  // the same fixed id again: a different missing piece, never a duplicate
+  const again = g.giveKeepsake('post', 'meadow:clover');
+  assert.ok(again && again !== 'meadow:clover' && again.startsWith('meadow:'));
+  // level 8 with the album still closed: primed, and the very first eligible action finds one (any xp)
+  const p = albumAt(8);
+  const events = [];
+  p.on('keepsake', (e) => events.push(e));
+  const id = p.rollKeepsake('animal', 1, { obj: 5 });
+  assert.ok(id, 'primed find');
+  assert.ok(p.albumOpen() && p.s.album.primed);
+  assert.equal(events.length, 1);
+  assert.deepEqual(events[0].at, { obj: 5 });
+  assert.equal(events[0].source, 'animal');
+  assert.equal(p.s.album.meter, 0, 'the meter resets on a find');
+  // not while the office parcel waits (its clover opens the album) — and only once
+  const o = albumAt(12);
+  o.s.post.office = true;
+  assert.equal(o.rollKeepsake('crop', 5), null);
+  assert.ok(!o.s.album.primed);
+  const q = albumAt(9);
+  q.s.album.primed = true;
+  assert.equal(q.rollKeepsake('crop', 1), null, 'primed once only');
+});
+
+test('album: chance ∝ xp (≤ 0.5), pity at 1.5·D, D(L) = max(60, xpToNext)', () => {
+  assert.equal(CFG.ALBUM.divisor(1), 60);
+  assert.equal(CFG.ALBUM.divisor(20), CFG.xpToNext(20));
+  const rate = (L, xp, n = 4000) => {
+    const g = albumAt(L);
+    g.s.album.open = true;
+    let hits = 0;
+    for (let i = 0; i < n; i++) {
+      g.s.album.meter = 0;
+      if (g.rollKeepsake('crop', xp)) { hits++; g.s.album.have = {}; }
+    }
+    return hits / n;
+  };
+  const D10 = CFG.ALBUM.divisor(10);
+  assert.ok(Math.abs(rate(10, D10 / 10) - 0.1) < 0.025, 'xp D/10 → ~10%');
+  assert.ok(Math.abs(rate(10, D10 / 4) - 0.25) < 0.03, 'xp D/4 → ~25%');
+  assert.ok(Math.abs(rate(10, D10 * 1.2) - 0.5) < 0.03, 'capped at 50% (below the pity line)');
+  assert.equal(rate(10, D10 * 1.5, 200), 1, 'one action worth 1.5·D always finds one');
+  // pity: with an unlucky RNG, the roll that takes the meter to 1.5·D always finds one
+  const g = albumAt(10);
+  g.s.album.open = true;
+  g.rand = () => 0.99999;
+  assert.equal(g.rollKeepsake('crop', D10 / 2), null);
+  assert.equal(g.rollKeepsake('crop', D10 / 2), null);
+  assert.equal(g.s.album.meter, D10);
+  assert.ok(g.rollKeepsake('crop', D10 / 2), 'pity at 1.5·D');
+  assert.equal(g.s.album.meter, 0);
+  // spamming quick crops never beats the xp rate: 2 xp at L10 → about 2/D per harvest
+  assert.ok(rate(10, 2, 3000) < 0.02);
+});
+
+test('album: routing — the source page, then an "anywhere" page, then the earliest; parcels fill the oldest page', () => {
+  const g = albumAt(20); // open: meadow (crop), barn (animal), kitchen (workshop), notes (order/visitor/wagon), orchard (fruit/crop), market (any)
+  g.s.album.open = true;
+  const pageOf = (id) => id && CFG.KEEPSAKES[id].page;
+  const find = (src) => { g.s.album.meter = 1e9; return pageOf(g.rollKeepsake(src, 1)); };
+  assert.equal(find('animal'), 'barn');
+  assert.equal(find('workshop'), 'kitchen');
+  for (const src of ['order', 'visitor', 'wagon']) assert.equal(find(src), 'notes');
+  assert.equal(find('fruit'), 'orchard');
+  assert.equal(find('crop'), 'meadow');
+  fillPage(g, 'meadow');
+  assert.equal(find('crop'), 'orchard', 'a full meadow page: the next page that wants crops');
+  fillPage(g, 'barn');
+  assert.equal(find('animal'), 'market', 'no animal page left: the "anywhere" page');
+  fillPage(g, 'market');
+  assert.equal(find('animal'), 'kitchen', 'then the earliest open page with a gap');
+  // a parcel: the oldest unfinished page
+  assert.equal(pageOf(g.giveKeepsake('post')), 'kitchen');
+  // clearing a dead tree never rolls; neither does debris
+  const t0 = albumAt(12);
+  t0.s.album.open = true;
+  let rolls = 0;
+  const orig = t0.rollKeepsake.bind(t0);
+  t0.rollKeepsake = (...a) => { rolls++; return orig(...a); };
+  const tree = { id: t0.s.nextId++, type: 'appletree', x: t0.landLo() + 12, z: t0.landLo() + 12, rot: 0, jobs: [], plantedAt: 0, harvests: CFG.OBJECTS.appletree.harvests };
+  t0.s.objects.push(tree); t0.rebuildOccupancy();
+  assert.equal(t0.treeState(tree), 'dead');
+  t0.removeObject(tree.id);
+  for (const d of t0.debris()) t0.clearDebris(d.id);
+  assert.equal(rolls, 0);
+});
+
+test('album: the seven actions roll (crop, fruit, animal, workshop, order, visitor, wagon) with their own xp', () => {
+  const g = albumAt(25);
+  g.s.coins = 1e7;
+  g.s.album.open = true;
+  const seen = [];
+  const orig = g.rollKeepsake.bind(g);
+  g.rollKeepsake = (src, xp, at) => { seen.push([src, xp]); return orig(src, xp, at); };
+  // crop
+  const [fx, fz] = [g.landLo() + 8, g.landLo() + 12];
+  g.s.soil[`${fx},${fz}`] = { crop: { type: 'wheat', plantedAt: 0 } };
+  assert.ok(g.harvest(fx, fz));
+  // fruit
+  const tree = { id: g.s.nextId++, type: 'appletree', x: g.landLo() + 12, z: g.landLo() + 12, rot: 0, jobs: [], plantedAt: 0 };
+  g.s.objects.push(tree); g.rebuildOccupancy();
+  assert.ok(g.harvestTree(tree));
+  // animal
+  const sp = g.findFreeSpot('coop');
+  const coop = g.placeObject('coop', sp[0], sp[1]);
+  const hen = g.buyAnimal('chicken');
+  hen.readyAt = 1;
+  assert.ok(g.collectAnimal(hen));
+  // workshop
+  const bp = g.findFreeSpot('bakery');
+  const bakery = g.placeObject('bakery', bp[0], bp[1]);
+  bakery.jobs.push({ recipe: 'bread', endAt: 1 });
+  assert.ok(g.collectFactory(bakery));
+  // order
+  g.s.orders[0] = { id: 9001, items: { wheat: 1 }, coins: 10, xp: 7 };
+  g.s.inventory.wheat = 5;
+  assert.ok(g.fulfillOrder(9001));
+  // visitor
+  g.s.visitors.push({ id: 9002, npc: 'rosa', item: 'wheat', qty: 1, coins: 10, xp: 6 });
+  assert.ok(g.serveVisitor(9002));
+  // wagon
+  g.s.wagon = { state: 'here', crates: [{ item: 'wheat', qty: 1, coins: 10, xp: 9, filled: false }, { item: 'wheat', qty: 99, coins: 10, xp: 9, filled: false }] };
+  assert.ok(g.fillCrate(0));
+  assert.deepEqual(seen.map(([s]) => s), ['crop', 'fruit', 'animal', 'workshop', 'order', 'visitor', 'wagon']);
+  assert.deepEqual(seen.map(([, x]) => x), [CFG.CROPS.wheat.xp, CFG.OBJECTS.appletree.harvestXp, CFG.ANIMALS.chicken.xp, CFG.RECIPES.bread.xp, 7, 6, 9]);
+  assert.ok(coop);
+});
+
+test('album: no duplicates over 2,000 finds; locked pages stay empty; every page found is a missing piece', () => {
+  const g = albumAt(3);
+  g.s.album.open = true;
+  const got = [];
+  g.on('keepsake', (e) => got.push(e.id));
+  for (let i = 0; i < 1000; i++) { g.s.album.meter = 1e9; g.rollKeepsake(i % 2 ? 'animal' : 'crop', 5); g.giveKeepsake('post'); }
+  assert.equal(new Set(got).size, got.length, 'never a duplicate');
+  assert.equal(got.length, 6, 'only the meadow page is open below level 8');
+  assert.ok(got.every((id) => id.startsWith('meadow:')), 'locked pages stay empty');
+  const st = g.albumStatus();
+  assert.ok(st.pages.filter((p) => p.id !== 'meadow').every((p) => p.found === 0));
+  assert.ok(st.pages.slice(1).every((p) => p.locked));
+  // every page open (L45): all 72, then nothing more (the parcel pays its fallback gems instead)
+  const h = albumAt(45);
+  h.s.album.open = true;
+  const all = [];
+  h.on('keepsake', (e) => all.push(e.id));
+  for (let i = 0; i < 1000; i++) { h.s.album.meter = 1e9; h.rollKeepsake(['crop', 'fruit', 'order'][i % 3], 50); h.giveKeepsake('post'); }
+  assert.equal(all.length, 72);
+  assert.equal(new Set(all).size, 72);
+  assert.equal(h.albumStatus().found, 72);
+  assert.equal(h.giveKeepsake('post'), null);
+});
+
+test('album: a page pays once (gems + its decoration to place); the launch album after page 8; the all-12 title; vouchers', () => {
+  const g = albumAt(45);
+  g.s.album.open = true;
+  const pages = [];
+  g.on('albumPage', (r) => pages.push(r));
+  let levelups = 0;
+  g.on('levelup', () => levelups++);
+  const xp0 = g.s.xp, m0 = mats(g);
+  assert.deepEqual(g.albumPagesReady(), []);
+  assert.equal(g.claimAlbumPage('meadow'), null, 'an incomplete page pays nothing');
+  fillPage(g, 'meadow');
+  assert.deepEqual(g.albumPagesReady(), ['meadow']);
+  assert.equal(g.albumStatus().ready, 1);
+  const gems0 = g.s.gems;
+  const r = g.claimAlbumPage('meadow');
+  assert.equal(r.gems, 3);
+  assert.equal(r.gift, 'bluebath');
+  assert.equal(g.s.gems, gems0 + 3);
+  assert.deepEqual(g.s.gifts, ['bluebath']);
+  assert.ok(r.tiles.some((t) => t.kind === 'gift' && t.type === 'bluebath'));
+  assert.equal(r.launch, null);
+  assert.equal(g.claimAlbumPage('meadow'), null, 'once');
+  assert.equal(g.s.gems, gems0 + 3);
+  // pages 2–8: the eighth claim adds the launch album (💎10, the Curio Cabinet, "Keeper of Keepsakes")
+  const launchPages = CFG.ALBUM.pages.slice(1, 8).map((p) => p.id);
+  for (const id of launchPages) fillPage(g, id);
+  let last = null;
+  for (const id of launchPages) last = g.claimAlbumPage(id);
+  assert.equal(last.id, 'attic');
+  assert.ok(last.launch && last.launch.gift === 'curio' && last.launch.gems === 10);
+  assert.equal(last.title, 'Keeper of Keepsakes');
+  assert.ok(g.s.album.launch && !g.s.album.all);
+  assert.ok(g.s.charm.titles.includes('Keeper of Keepsakes'));
+  assert.deepEqual(g.s.gifts, ['bluebath', 'copperwell', 'rosepicnic', 'blossomarch', 'harvestmill', 'mossfountain', 'lilacgazebo', 'silverrooster', 'curio']);
+  // pages 9–12 (the charm feature is off: each gilding voucher is paid as 💎15)
+  for (const id of ['heirloom', 'stars', 'festival', 'champion']) fillPage(g, id);
+  let gems = g.s.gems;
+  assert.equal(g.claimAlbumPage('stars').voucher, 1);
+  assert.equal(g.s.gems, gems + 8 + 15, 'Starry Nights: 💎8 + a voucher as 💎15');
+  assert.equal(g.s.charm.vouchers, 0);
+  g.claimAlbumPage('festival');
+  g.claimAlbumPage('heirloom');
+  gems = g.s.gems;
+  const fin = g.claimAlbumPage('champion');
+  assert.equal(g.s.gems, gems + 10 + 2 * 15);
+  assert.equal(fin.title, 'Valley Historian');
+  assert.ok(g.s.album.all);
+  assert.deepEqual(g.s.charm.titles, ['Keeper of Keepsakes', 'Valley Historian']);
+  assert.ok(g.s.gifts.includes('skyballoon'));
+  assert.equal(pages.length, 12);
+  // the whole album: 90 gems (80 on the pages + 10 for the launch album), no XP, no materials, no level-up
+  assert.equal(CFG.ALBUM.pages.reduce((n, p) => n + p.prize.gems, 0) + CFG.ALBUM.launch.gems, 90);
+  assert.equal(g.granted.album.gems, 90 + 4 * 15, 'and 4 vouchers as 💎15');
+  assert.equal(g.s.xp, xp0);
+  assert.equal(mats(g), m0);
+  assert.equal(levelups, 0);
+  assert.equal(g.granted.album.xp, 0);
+  assert.equal(g.granted.album.materials, 0);
+  // with Prettiest Farm on, a voucher is kept for gilding instead
+  const c = new Game({ clock, storage: null, features: { charm: true } });
+  c.s.level = 45;
+  fillPage(c, 'stars');
+  const cg = c.s.gems;
+  const cr = c.claimAlbumPage('stars');
+  assert.equal(c.s.gems, cg + 8);
+  assert.equal(c.s.charm.vouchers, 1);
+  assert.ok(cr.tiles.some((t) => t.kind === 'voucher' && t.n === 1));
+  // the album feature off: no rolls, no finds, nothing to claim
+  const off = new Game({ clock, storage: null, features: { album: false } });
+  off.s.level = 20;
+  assert.equal(off.rollKeepsake('crop', 1e6), null);
+  assert.equal(off.giveKeepsake('post', 'meadow:clover'), null);
+  fillPage(off, 'meadow');
+  assert.deepEqual(off.albumPagesReady(), []);
+  assert.equal(off.claimAlbumPage('meadow'), null);
+});
+
+test('album: albumStatus and albumSeen (NEW finds)', () => {
+  const g = albumAt(10);
+  const st0 = g.albumStatus();
+  assert.deepEqual([st0.open, st0.found, st0.total, st0.ready, st0.pages.length], [false, 0, 72, 0, 12]);
+  assert.deepEqual(st0.pages.map((p) => p.locked), [false, false, true, true, true, true, true, true, true, true, true, true]);
+  g.giveKeepsake('post', 'meadow:clover');
+  g.giveKeepsake('post', 'barn:bell');
+  const st = g.albumStatus();
+  assert.equal(st.found, 2);
+  assert.deepEqual(st.pages[0].fresh, ['meadow:clover']);
+  assert.deepEqual(st.pages[1].have, ['barn:bell']);
+  let ev = 0;
+  g.on('album', () => ev++);
+  g.albumSeen('meadow');
+  assert.deepEqual(g.s.album.fresh, ['barn:bell']);
+  assert.equal(ev, 1);
+  g.albumSeen('meadow');
+  assert.equal(ev, 1, 'nothing new: no event');
+});
+
+test('album config: 12 × 6 = 72 unique keepsakes and emoji; prizes are level-99 decor; pages unlock at their levels', () => {
+  const A = CFG.ALBUM;
+  assert.equal(A.pages.length, 12);
+  const ids = [], emoji = [];
+  for (const p of A.pages) {
+    assert.equal(p.items.length, 6, p.id);
+    for (const [it, icon, name] of p.items) { ids.push(`${p.id}:${it}`); emoji.push(icon); assert.ok(name && chars(name) <= 16, name); }
+    assert.ok(p.hint && p.name && p.icon);
+    assert.ok(p.src === null || (Array.isArray(p.src) && p.src.every((x) => ['crop', 'fruit', 'animal', 'workshop', 'order', 'visitor', 'wagon'].includes(x))), p.id);
+  }
+  assert.equal(new Set(ids).size, 72);
+  assert.equal(new Set(emoji).size, 72);
+  assert.equal(Object.keys(CFG.KEEPSAKES).length, 72);
+  // no keepsake looks like something you farm, build or buy
+  const gameIcons = new Set([...Object.values(CFG.ITEMS), ...Object.values(CFG.OBJECTS), ...Object.values(CFG.ANIMALS)].map((x) => x.icon).filter(Boolean));
+  for (const e of emoji) assert.ok(!gameIcons.has(e), `keepsake ${e} clashes with a game icon`);
+  assert.deepEqual(A.pages.map((p) => p.level), [0, 8, 11, 14, 17, 19, 24, 27, 31, 35, 37, 39]);
+  assert.deepEqual(A.pages.map((p) => p.prize.gems), [3, 4, 5, 5, 6, 6, 7, 8, 8, 8, 10, 10]);
+  assert.deepEqual(A.pages.map((p) => p.prize.gift || null), ['bluebath', 'copperwell', 'rosepicnic', 'blossomarch', 'harvestmill', 'mossfountain', 'lilacgazebo', 'silverrooster', 'skyballoon', null, null, null]);
+  assert.deepEqual(A.pages.map((p) => p.prize.voucher || 0), [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 2]);
+  // every exclusive (§3.5) is a never-sold, free, level-99 decoration on a real model, with its charm
+  const EXCL = { bluebath: ['birdbath', '#8fc9ff', 60], copperwell: ['well', '#f0a868', 55], rosepicnic: ['picnic', '#ffb3b3', 90], blossomarch: ['flowerarch', '#ffc0d9', 185],
+    harvestmill: ['windmill', '#ffbe7a', 120], mossfountain: ['fountain', '#b5e8a8', 300], lilacgazebo: ['gazebo', '#d9c6ff', 455], silverrooster: ['statue', '#e3e9f0', 680],
+    curio: [undefined, undefined, 300], skyballoon: ['balloon', '#bfe3ff', 960], blossomoak: ['oak', '#ffc7dd', 90], frostpine: ['pine', '#dff2ff', 90],
+    goldscarecrow: ['scarecrow', 'gold', 75], goldlamp: ['lamp', 'gold', 75], mailbox: [undefined, undefined, 40] };
+  for (const [type, [model, tint, charm]] of Object.entries(EXCL)) {
+    const d = CFG.OBJECTS[type];
+    assert.ok(d && d.kind === 'decor' && d.level === 99 && d.cost === 0, type);
+    assert.equal(d.model, model, `${type} model`);
+    assert.equal(d.tint, tint, `${type} tint`);
+    assert.equal(d.charm, charm, `${type} charm`);
+    if (model) assert.ok(CFG.OBJECTS[model], `${type}: ${model} is a real decoration`);
+  }
+  for (const p of A.pages) if (p.prize.gift) assert.ok(EXCL[p.prize.gift], p.prize.gift);
+  assert.ok(CFG.OBJECTS[A.launch.gift] && A.launch.gems === 10 && A.launch.title === 'Keeper of Keepsakes' && A.all.title === 'Valley Historian');
+  assert.equal(A.voucherFallbackGems, 15);
+  // the level-up modal and "Next: …" list every page from level 8; 31/35/37/39 are no longer empty
+  for (const p of A.pages.slice(1)) assert.ok(CFG.unlocksAtLevel(p.level).some((u) => u.name === `Album page: ${p.name}` && u.icon === '📖'), p.id);
+  for (const L of [31, 35, 37, 39]) assert.ok(CFG.unlocksAtLevel(L).length > 0, `L${L}`);
+  for (const L of [35, 37, 39]) assert.ok(CFG.FEATURE_TIPS[L] && chars(CFG.FEATURE_TIPS[L]) <= 80, `tip L${L}`);
+  // exclusives never show up as an unlock
+  for (const u of [...Array(45)].flatMap((_, l) => CFG.unlocksAtLevel(l + 1))) assert.ok(!Object.keys(EXCL).some((k) => CFG.OBJECTS[k].name === u.name), u.name);
+});
+
+test('album exclusives render through the one tint path (recolours, gold, o.gilded) and the Curio Cabinet has a model', async () => {
+  const V = await import('../src/game/views.js');
+  await import('../src/game/models/index.js');
+  const A = await import('../src/game/assets.js');
+  const colours = (obj) => { const out = new Set(); obj.traverse((m) => { if (m.isMesh && m.material !== A.MATS.glow && m.material !== A.MATS.glass) out.add('#' + m.material.color.getHexString()); }); return [...out]; };
+  for (const [type, d] of Object.entries(CFG.OBJECTS)) {
+    if (d.level !== 99 || d.kind !== 'decor') continue;
+    const obj = V.applyTint(A.makeObject(d.model || type), V.tintFor({ type }));
+    assert.ok(obj.children.length > 0, `${type} has a model`);
+    if (d.tint === 'gold') assert.deepEqual(colours(obj), [CFG.GOLD.color], type);
+    else if (d.tint) assert.deepEqual(colours(obj), [d.tint], type);
+  }
+  assert.ok(A.BUILDERS.curio, 'the curio model');
+  // gilding (Prettiest Farm) takes the same path: a gilded object is gold whatever its type
+  assert.equal(V.tintFor({ type: 'gazebo', gilded: true }), CFG.GOLD);
+  assert.equal(V.tintFor({ type: 'gazebo' }), null);
+  assert.equal(V.tintFor({ type: 'silverrooster' }).desat, 1);
+  // one cloned material per colour (shared by every copy), and the ghost's copy keeps the shader tweak
+  const a = V.applyTint(A.makeObject('statue'), V.tintFor({ type: 'silverrooster' }));
+  const b = V.applyTint(A.makeObject('statue'), V.tintFor({ type: 'silverrooster' }));
+  assert.equal(a.children[0].material, b.children[0].material);
+  const c = V.cloneMaterial(a.children[0].material);
+  assert.equal(c.customProgramCacheKey(), a.children[0].material.customProgramCacheKey());
+});
+
+test('album RNG: Math.random is never used by rolls, parcels or claims; the same seed finds the same keepsakes', () => {
+  const noRandom = (fn) => { const orig = Math.random; Math.random = () => { throw new Error('Math.random used'); }; try { return fn(); } finally { Math.random = orig; } };
+  const run = () => {
+    const g = albumAt(30);
+    g.s.album.open = true;
+    return noRandom(() => {
+      const out = [];
+      for (let i = 0; i < 300; i++) out.push(g.rollKeepsake(['crop', 'fruit', 'animal', 'workshop', 'order', 'visitor', 'wagon'][i % 7], 40));
+      for (let i = 0; i < 10; i++) out.push(g.giveKeepsake('post'));
+      fillPage(g, 'meadow');
+      out.push(g.claimAlbumPage('meadow').gift);
+      return out;
+    });
+  };
+  const t0 = t;
+  const a = run();
+  t = t0;
+  const b = run();
+  assert.ok(a.filter(Boolean).length > 10);
+  assert.deepEqual(a, b);
+});
+
 let pass = 0, fail = 0;
 for (const { name, fn } of tests) {
   try { await fn(); pass++; console.log('  ✓', name); } catch (e) { fail++; console.log("  ✗", name, "\n     ", e.message.split("\n")[0], (e.stack || "").split("\n").find((l) => l.includes("test.mjs:")) || ""); }

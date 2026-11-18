@@ -5,7 +5,7 @@
 // It only changes presentation and input shortcuts: every rule lives in the Game.
 import * as THREE from 'three';
 import './guide.css';
-import { ITEMS, OBJECTS, ANIMALS, CHAPTERS, QUESTS, TUTORIAL, GUIDE, VISITORS, RECIPES, CAMERA } from '../game/config.js';
+import { ITEMS, OBJECTS, ANIMALS, CHAPTERS, QUESTS, TUTORIAL, GUIDE, VISITORS, RECIPES, CAMERA, ALBUM } from '../game/config.js';
 import {
   planStep, need, nextMode, questCardInfo, shouldAutoShowDaily, levelUpGo, pendingTip, graduationPending, fieldCentre, reserves,
   mailboxNear, markTipSeen,
@@ -30,6 +30,8 @@ const FLASH = 4.5; // s a one-off line stays on the card
 const TIP_GAP = 45; // s between FEATURE_TIPS
 const GLOW_NEW = 4; // s a new goal's target glows (coached)
 const PRIORITY = { chest: 2, gift: 3, postGift: 3, daily: 4 }; // anything else (tips, interrupt toasts) is 5
+// a queue kind's family: 'chest:album:barn' is a chest, 'gift:copperwell' a gift (one entry per kind, so prizes don't drop)
+const family = (kind) => kind.split(':')[0];
 const POST_AWAY_AFTER = 20; // s after start: "A parcel came while you were away" (once per session)
 const IDLE_EVENTS = ['soil', 'animalChanged', 'animalAdded', 'factoryChanged', 'objectAdded', 'orderDone', 'visitorServed', 'quest',
   'daily', 'chores', 'land', 'storageUpgraded', 'debrisCleared', 'post'];
@@ -1302,6 +1304,32 @@ export class GuideController {
       () => g.postStatus().ready && g.s.settings?.hints !== 'off');
   }
 
+  // A claimed album page (§3.7): its chest ("Page complete!", the gems, the decoration, the launch album's extras),
+  // then each decoration's placement through the gift queue (the page's, then the Curio Cabinet).
+  albumPrize(r) {
+    const g = this.game;
+    const page = ALBUM.pages.find((p) => p.id === r?.id);
+    if (!page) return;
+    const gifts = [r.gift, r.launch?.gift].filter(Boolean);
+    const titles = [r.launch?.title, r.title].filter((x, i, a) => x && a.indexOf(x) === i);
+    const note = r.launch ? '📖 The launch album is complete — Mabel is so proud!' : null;
+    this.enqueue('chest:album:' + page.id, () => this.hud.showChest({
+      custom: { kicker: 'Page complete!', icon: page.icon, title: page.name, tiles: [...(r.tiles || []), ...(r.launch?.tiles || [])], titles, note },
+      onOpen: () => {
+        for (const type of gifts) {
+          const waits = () => (g.s.gifts || []).includes(type);
+          if (!waits()) continue;
+          this.enqueue('gift:' + type, () => {
+            this.ctrl.startPlacement(type, { gift: true, near: fieldCentre(g) });
+            if (g.s.settings?.hints !== 'off') this.layer.coach(`${OBJECTS[type].icon} A ${OBJECTS[type].name} for your farm! Tap ✓ to put it up.`, 5000);
+          }, waits);
+        }
+        this.requestTick();
+      },
+    }));
+    this.requestTick();
+  }
+
   // a parcel's Mailbox goes up by the order board once its modal has closed (the gift queue waits for the modal)
   postGift(type) {
     const g = this.game;
@@ -1317,7 +1345,7 @@ export class GuideController {
   // at: earliest time (performance clock, s); a waiting item also holds back everything behind it
   enqueue(kind, show, valid = () => true, at = 0) {
     if (this.queue.some((q) => q.kind === kind)) return;
-    this.queue.push({ kind, prio: PRIORITY[kind] ?? 5, show, valid, at });
+    this.queue.push({ kind, prio: PRIORITY[kind] ?? PRIORITY[family(kind)] ?? 5, show, valid, at });
     this.queue.sort((a, b) => a.prio - b.prio);
   }
 
@@ -1328,7 +1356,7 @@ export class GuideController {
       if (hud.topModal() || hud.levelUpPending() || c.placing || c.input.gesture || this.layer.modalOpen || hud.camPadOpen?.()) return;
       const next = this.queue[0];
       if (nowS() < next.at) return;
-      const modal = next.kind === 'chest' || next.kind === 'daily';
+      const modal = family(next.kind) === 'chest' || next.kind === 'daily';
       // toast-cards and chains wait for a free screen and for Mabel to finish what she is showing
       if (!modal && (hud.panel || hud.seedPopoverOpen() || this.session || this.layer.toastEl?.isConnected)) return;
       this.queue.shift();

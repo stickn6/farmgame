@@ -14,7 +14,7 @@
 // Steps are memoised and shared: treat them as read-only.
 import {
   ITEMS, CROPS, ANIMALS, RECIPES, OBJECTS, STORAGE, QUESTS, CHAPTERS, TUTORIAL, FEATURE_TIPS, VISITORS, WAGON, PLOTS, GUIDE,
-  questLevel, tutorialTile, xpForLevel, xpToNext,
+  KEEPSAKES, questLevel, tutorialTile, xpForLevel, xpToNext,
 } from './config.js';
 import { farmCore } from './layout.js';
 import { GUIDE_KEY_PATTERNS, isGuideKey } from './guide-keys.js';
@@ -1173,12 +1173,26 @@ export const EXTRA_TIPS = [
     onTap: (guide) => guide.hud.openPostPop?.(),
   },
   {
+    // the first keepsake (Kip's clover at 30 min on a new farm): Mabel introduces her album, once
+    key: 'tip:album',
+    text: (g) => `Ooh, my old ${firstKeepsake(g)?.name || 'keepsake'}! It goes in my Keepsake Album 📖 — find all 6 on a page for a prize.`,
+    when: (g) => !!g.s.album?.open && !!firstKeepsake(g),
+    onTap: (guide) => guide.hud.openTreasures?.('album'),
+  },
+  {
     key: 'tip:camera',
     text: 'Tip: twist two fingers to turn your farm — or tap 🧭 to turn and tilt.',
     when: (g, ctx) => !!ctx.cameraTipDue || g.now() - (g.s.createdAt || 0) >= FARM_AGE_TIP,
     onTap: (guide) => { guide.hud.openCamPad?.(); guide.hud.pulseCamBtn?.(); },
   },
 ];
+
+// the album's first find (the earliest in s.album.have), for tip:album
+function firstKeepsake(g) {
+  let id = null, at = Infinity;
+  for (const [k, ms] of Object.entries(g.s.album?.have || {})) if (ms < at && KEEPSAKES[k]) { at = ms; id = k; }
+  return id ? KEEPSAKES[id] : null;
+}
 
 // The next one-time tip to show: a FEATURE_TIPS line ({ level, key, text }) first, then an EXTRA_TIPS entry
 // ({ key, text, onTap, extra: true }); null when none is due (or hints are off).
@@ -1366,7 +1380,7 @@ function guidedLine(g, s) {
 
 // HUD groups a guided step needs revealed (§4 progressive reveal), minus what's already shown
 const REVEAL_OF = [[/^btn:shop|^shop:/, 'shop'], [/^btn:barn|^storage:/, 'barn'], [/^btn:orders|^order:/, 'orders'], [/^tool:/, 'tools'],
-  [/^quest:/, 'quest'], [/^level:/, 'level'], [/^pill:gems/, 'gems'], [/^btn:today|^today:/, 'today'], [/^btn:trophy/, 'trophy'],
+  [/^quest:/, 'quest'], [/^level:/, 'level'], [/^pill:gems/, 'gems'], [/^btn:today|^today:/, 'today'], [/^btn:trophy|^treasures:|^album:|^ribbons:/, 'trophy'],
   [/^btn:camera|^cam:/, 'camera'], [/^btn:post|^modal:post|^today:post/, 'post']];
 
 function revealFor(g, steps) {

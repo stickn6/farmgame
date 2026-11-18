@@ -41,6 +41,8 @@ npm run sim      # pacing simulator: how long each level/unlock takes, bots and 
 
 **The Post.** Your first parcel comes 5 minutes after you start, and each next one is on its way the moment you open the last: 10 min, 15 min, 30 min, then 3 hours, then every 8 hours. One always waits for you, even while the game is closed; parcels never pile up or expire. The 📪 pill (next to 🧭) counts down and turns into 📬 *Open!*; you open each parcel yourself with a little reveal. They come from Grandma Mabel and the villagers with a note, and hold gems, keepsakes for Mabel's album, pantry goods and a little coin that grows with your level (the first coins at 4 hours), plus a 📮 **Mailbox** for your farm at 1 hour: its flag goes up when a parcel waits. Parcels never give XP or building materials. Farms from before the Post get one *Post office opening* parcel instead of the welcome ones.
 
+**Mabel's Keepsake Album** (🏆 → 📖 Album). 72 keepsakes on 12 pages of 6. They turn up while you farm (each page has a favourite source: crops, animals, workshops, orders and visitors, fruit, or anywhere) and in parcels, and you never get a duplicate. The chance of a find grows with the XP an action earns, with a pity meter, so quick crops can't farm them. The album opens with Kip's clover in parcel #3 (or at level 8); page 1 opens with it, the others at levels 8, 11, 14, 17, 19, 24, 27, 31, 35, 37 and 39. A full page pays gems and a one-of-a-kind recoloured decoration (the Bluebird Bath, Copper Well, … Silver Rooster, Sky Balloon) to put up on the farm; the first 8 pages also bring the **Curio Cabinet** and the title *Keeper of Keepsakes*, all 12 *Valley Historian*. Album rewards never give XP or building materials. 🏆 **Treasures** holds the album and the achievements (**Awards**).
+
 **Village projects** (L16+). Restore the Old Bridge, the Bandstand and the Greenhouse, and turn your farmhouse into the **Master Farmhouse**. You donate coins and goods across 3 stages, which you can watch being built, and each finished project gives a small permanent perk.
 
 **Progression and pacing** (see below).
@@ -51,7 +53,7 @@ npm run sim      # pacing simulator: how long each level/unlock takes, bots and 
 - **Land expansion**, 8 steps from 16×16 to 32×32.
 
 **Extras.**
-- Achievements.
+- Achievements (🏆 → Awards).
 - Gems, an earned-only currency for skipping timers, buying a few missing materials or unlocking production slots early.
 - Premium decorations, from bird baths to a hot-air balloon.
 - A day/night cycle, a farm dog, and synthesized music and sound.

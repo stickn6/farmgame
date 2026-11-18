@@ -673,4 +673,54 @@ function mailbox(flag = 'down') {
   return group(P);
 }
 
-registerBuilders({ birdbath, picnic, flowerarch, fountain, gazebo, statue, balloon, weed, stone, stump, mailbox });
+// ------------------------------------------------------------------ curio cabinet (2x1): Mabel's keepsakes on show
+// The launch-album prize: a tall wooden cabinet with a glass front and three shelves of little treasures.
+function curio() {
+  const wood = '#9a6338', woodD = '#6e4325', woodL = '#c48a50', brass = '#e0b54a';
+  const W = 1.62, D = 0.56, H0 = 0.12, H1 = 1.62; // width (x), depth (z), plinth top, body top
+  const zf = D / 2; // the glass front
+  const P = [
+    // feet and plinth
+    ...[[-1, -1], [1, -1], [-1, 1], [1, 1]].map(([sx, sz]) => box(0.12, H0, 0.12, woodD, sx * (W / 2 - 0.08), 0, sz * (D / 2 - 0.08))),
+    box(W + 0.06, 0.08, D + 0.06, woodD, 0, H0 - 0.04, 0),
+    // back (a pale lining inside, so the keepsakes show through the glass), sides, top and the crown
+    box(W, H1 - H0, 0.05, wood, 0, H0, -D / 2 + 0.025),
+    box(W - 0.16, H1 - H0 - 0.1, 0.02, '#f3e2bf', 0, H0 + 0.05, -D / 2 + 0.06),
+    box(0.07, H1 - H0, D, wood, -W / 2 + 0.035, H0, 0), box(0.07, H1 - H0, D, wood, W / 2 - 0.035, H0, 0),
+    box(0.07, H1 - H0, 0.07, woodD, 0, H0, zf - 0.03), // the doors' middle stile
+    box(W + 0.1, 0.07, D + 0.1, woodD, 0, H1, 0),
+    box(W - 0.2, 0.1, 0.06, woodL, 0, H1 + 0.07, -D / 2 + 0.1),
+    cyl(0.07, 0.07, 0.05, 8, brass, 0, H1 + 0.17, -D / 2 + 0.1),
+    box(W, 0.06, D - 0.04, woodD, 0, H0 + 0.02, 0), // bottom
+    // the glass doors, with brass knobs
+    box(W - 0.12, H1 - H0 - 0.08, 0.02, '#cfe9f2', 0, H0 + 0.06, zf - 0.01, 'glass'),
+    ball(0.035, brass, -0.08, 0.86, zf + 0.02), ball(0.035, brass, 0.08, 0.86, zf + 0.02),
+  ];
+  // three shelves, each holding a few keepsakes (bell, teapot, clover pot, book, medal, photo frame …)
+  const shelves = [0.5, 0.88, 1.26];
+  for (const y of shelves) P.push(box(W - 0.14, 0.04, D - 0.1, woodL, 0, y - 0.04, -0.02));
+  const z0 = -0.04;
+  // bottom shelf: a teapot, a stack of books, a little jar
+  P.push(
+    sph(0.1, '#f2f2ec', -0.5, H0 + 0.18, z0, 8, 6), cone(0.05, 0.07, 6, '#f2f2ec', -0.5, H0 + 0.26, z0),
+    rot(cyl(0.02, 0.03, 0.12, 5, '#f2f2ec', -0.37, H0 + 0.15, z0), 0, 0, -1.0),
+    box(0.26, 0.06, 0.18, '#c0504d', 0.1, H0 + 0.08, z0), box(0.24, 0.06, 0.17, '#4d7cc0', 0.1, H0 + 0.14, z0), box(0.22, 0.05, 0.16, '#6aa84f', 0.1, H0 + 0.2, z0),
+    cyl(0.07, 0.07, 0.16, 8, '#e8b04a', 0.5, H0 + 0.08, z0), cyl(0.075, 0.075, 0.03, 8, woodD, 0.5, H0 + 0.24, z0),
+  );
+  // middle shelf: a cow bell, a clover in a pot, a photo frame
+  P.push(
+    cone(0.09, 0.16, 8, brass, -0.48, 0.5, z0), ball(0.03, woodD, -0.48, 0.67, z0),
+    cyl(0.07, 0.06, 0.1, 8, '#c8693c', 0, 0.5, z0), ball(0.05, '#3fa34d', -0.035, 0.66, z0), ball(0.05, '#3fa34d', 0.035, 0.66, z0), ball(0.05, '#3fa34d', 0, 0.7, z0 - 0.02), ball(0.05, '#3fa34d', 0, 0.62, z0 + 0.02),
+    rot(box(0.24, 0.2, 0.03, woodD, 0.46, 0.5, z0 - 0.06), -0.2, 0, 0), rot(box(0.18, 0.14, 0.02, '#f5e8c8', 0.46, 0.53, z0 - 0.04), -0.2, 0, 0),
+  );
+  // top shelf: a medal on a stand, a nesting doll, a snow-white shell
+  P.push(
+    box(0.03, 0.18, 0.03, woodD, -0.5, 0.88, z0), cyl(0.07, 0.07, 0.02, 10, brass, -0.5, 1.06, z0 + 0.02),
+    rot(cyl(0.07, 0.07, 0.02, 10, '#e2b33a', -0.5, 1.01, z0 + 0.03), Math.PI / 2, 0, 0), box(0.05, 0.08, 0.01, '#d24b3e', -0.5, 1.06, z0 + 0.03),
+    sph(0.08, '#d24b3e', 0, 0.96, z0, 8, 6), sph(0.055, '#f5e8c8', 0, 1.07, z0, 8, 6), ball(0.06, '#d24b3e', 0, 1.1, z0 - 0.01),
+    scl(sph(0.08, '#f4ece0', 0.48, 0.92, z0, 8, 5), 1.2, 0.7, 1), cone(0.05, 0.08, 5, '#f4ece0', 0.48, 0.94, z0 - 0.02),
+  );
+  return group(P);
+}
+
+registerBuilders({ birdbath, picnic, flowerarch, fountain, gazebo, statue, balloon, weed, stone, stump, mailbox, curio });

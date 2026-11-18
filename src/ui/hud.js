@@ -4,7 +4,7 @@
 import * as CONFIG from '../game/config.js';
 import {
   ITEMS, CROPS, ANIMALS, OBJECTS, RECIPES, STORAGE, ACHIEVEMENTS, DAILY, VISITORS, MASTERY, PLOTS,
-  CHORES, WAGON, PROJECTS, CAMERA, POST, KEEPSAKES, xpForLevel, unlocksAtLevel, nextUnlockLevel,
+  CHORES, WAGON, PROJECTS, CAMERA, POST, KEEPSAKES, ALBUM, xpForLevel, unlocksAtLevel, nextUnlockLevel,
 } from '../game/config.js';
 import { isHome } from '../game/camera.js';
 
@@ -138,7 +138,7 @@ export class HUD {
     this.coinsEl = h('span', { class: 'num' }, '0');
     this.coinsPill = h('div', { class: 'pill coins', 'data-guide': 'pill:coins', onclick: () => this.openBarn() }, h('span', { class: 'ico' }, '🪙'), this.coinsEl);
     this.gemsEl = h('span', { class: 'num' }, '0');
-    this.gemsPillEl = h('div', { class: 'pill gems', 'data-guide': 'pill:gems', 'data-reveal': 'gems', onclick: () => this.toast('💎 Gems: earn them from level-ups, achievements, mastery and daily gifts. Use them to finish timers.', 'info') }, h('span', { class: 'ico' }, '💎'), this.gemsEl);
+    this.gemsPillEl = h('div', { class: 'pill gems', 'data-guide': 'pill:gems', 'data-reveal': 'gems', onclick: () => this.toast('💎 Gems: earn them from level-ups, achievements, mastery, daily gifts, parcels and album pages. Use them to finish timers.', 'info') }, h('span', { class: 'ico' }, '💎'), this.gemsEl);
     this.levelNum = h('div', { class: 'level-num' }, '1');
     this.xpFill = h('div', { class: 'xp-fill' });
     this.xpText = h('div', { class: 'xp-text' }, '');
@@ -149,7 +149,7 @@ export class HUD {
     );
     const badge = () => h('span', { class: 'badge hidden' }, '');
     this.dailyBtn = h('button', { class: 'round-btn', title: 'Today: gift & chores', 'data-guide': 'btn:today', 'data-reveal': 'today', onclick: () => this.openToday() }, '🎁', badge());
-    this.trophyBtn = h('button', { class: 'round-btn', title: 'Achievements', 'data-guide': 'btn:trophy', 'data-reveal': 'trophy', onclick: () => this.openFarmhouse('achievements') }, '🏆', badge());
+    this.trophyBtn = h('button', { class: 'round-btn', title: 'Treasures: album & awards', 'data-guide': 'btn:trophy', 'data-reveal': 'trophy', onclick: () => this.openTreasures() }, '🏆', badge());
     this.settingsBtn = h('button', { class: 'round-btn', title: 'Farm & settings', 'data-guide': 'btn:settings', onclick: () => this.openFarmhouse('farm') }, '⚙️');
 
     this.questIcon = h('div', { class: 'q-icon' }, '📜');
@@ -287,6 +287,8 @@ export class HUD {
     });
     g.on('storageUpgraded', ({ id, level }) => { this.toast(`${STORAGE[id].icon} ${STORAGE[id].name} upgraded to level ${level + 1}!`, 'good'); this.refreshPanel(); });
     g.on('post', () => { this.refreshPostPill(); this.refreshPanel(); });
+    // Mabel's album: the 🏆 badge and an open Treasures panel follow every find and claim
+    g.on('album', () => { this.refreshBadges(); if (this.panel?.id === 'treasures') this.refreshPanel(); });
   }
 
   refreshAll() {
@@ -426,7 +428,9 @@ export class HUD {
     const g = this.game;
     const ready = g.s.orders.filter((o) => !o.waitUntil && g.hasItems(o.items)).length;
     this.setBadge(this.ordersBtn, ready);
-    this.setBadge(this.trophyBtn, g.achievementsReady());
+    // 🏆 = awards to claim + album pages to claim (+ ribbon ranks, with Prettiest Farm)
+    const ribbons = g.features?.charm ? (g.charmStatus?.()?.ready || 0) : 0;
+    this.setBadge(this.trophyBtn, g.achievementsReady() + g.albumPagesReady().length + ribbons);
     const today = (g.dailyStatus().canClaim ? 1 : 0) + g.choresReady();
     this.setBadge(this.dailyBtn, today, today > 1 ? today : '!');
     let full = false;
@@ -1680,16 +1684,17 @@ export class HUD {
     });
   }
 
-  // ---------------------------------------------------------------- farmhouse: progress / achievements / settings
+  // ---------------------------------------------------------------- farmhouse: progress / village / settings
+  // (achievements moved to 🏆 Treasures → Awards)
   openFarmhouse(tab) {
-    const tabs = [{ id: 'progress', label: '⭐ Progress' }, { id: 'village', label: '🏘️ Village' }, { id: 'achievements', label: '🏆 Achievements' }, { id: 'farm', label: '⚙️ Settings' }];
+    const tabs = [{ id: 'progress', label: '⭐ Progress' }, { id: 'village', label: '🏘️ Village' }, { id: 'farm', label: '⚙️ Settings' }];
     this.openPanel({
       id: 'farmhouse',
       title: '🏡 Your Farm',
       tabs,
-      tab: tab || this.pickTab('farmhouse', tabs, 'progress'),
+      tab: tabs.some((t) => t.id === tab) ? tab : this.pickTab('farmhouse', tabs, 'progress'),
       live: true,
-      render: (t) => (t === 'achievements' ? this.renderAchievements() : t === 'farm' ? this.renderSettings() : t === 'village' ? this.renderVillage() : this.renderProgress()),
+      render: (t) => (t === 'farm' ? this.renderSettings() : t === 'village' ? this.renderVillage() : this.renderProgress()),
     });
   }
 
@@ -1697,6 +1702,9 @@ export class HUD {
     const g = this.game;
     const s = g.s;
     const wrap = h('div', { class: 'farm-panel' });
+    // titles earned (Mabel's album, later the Prettiest Farm ribbons)
+    const titles = s.charm?.titles || [];
+    if (titles.length) wrap.append(h('div', { class: 'farm-titles' }, titles.map((x) => h('span', { class: 'farm-title' }, `🏅 ${x}`))));
     wrap.append(h('div', { class: 'stats' },
       h('div', { class: 'stat' }, h('b', {}, s.level), h('span', {}, 'Level')),
       h('div', { class: 'stat' }, h('b', {}, fmtNum(s.stats.harvested)), h('span', {}, 'Harvested')),
@@ -1780,6 +1788,119 @@ export class HUD {
     for (const [i, total] of Object.entries(st.items)) row(ITEMS[i].icon, ITEMS[i].name, g.count(i), need.items[i], total, () => this.ctrl.contribute(id, i, need.items[i]));
     wrap.append(rows);
     wrap.append(h('div', { class: 'tip' }, `Each stage: ⭐ XP & 💎 gems. When finished: ${def.perk}. Give items whenever you have them; coins go in at most half your wallet at a time.`));
+    return wrap;
+  }
+
+  // ---------------------------------------------------------------- 🏆 Treasures: 📖 Album · 💗 Ribbons · 🏆 Awards (§3.6)
+  // (the Ribbons tab comes with Prettiest Farm, from level 19)
+  treasureTabs() {
+    const g = this.game;
+    const tabs = [{ id: 'album', label: '📖 Album' }];
+    if (g.features?.charm && g.s.level >= 19 && typeof this.renderRibbons === 'function') tabs.push({ id: 'ribbons', label: '💗 Ribbons' });
+    tabs.push({ id: 'awards', label: '🏆 Awards' });
+    return tabs;
+  }
+
+  // 🏆 opens on something to claim (an album page, a ribbon rank, an award), else the album once it's open, else Awards
+  treasuresTab() {
+    const g = this.game;
+    if (g.albumPagesReady().length) return 'album';
+    if (g.features?.charm && g.charmStatus?.()?.ready) return 'ribbons';
+    if (g.achievementsReady()) return 'awards';
+    return g.albumOpen() ? 'album' : 'awards';
+  }
+
+  openTreasures(tab) {
+    const tabs = this.treasureTabs();
+    this.albumPageId = null; // the default page again (§3.6)
+    this.albumNew = new Set(); // finds shown as NEW while this panel is open
+    this.openPanel({
+      id: 'treasures',
+      title: '🏆 Treasures',
+      tabs,
+      tab: tabs.some((t) => t.id === tab) ? tab : this.pickTab('treasures', tabs, this.treasuresTab()),
+      live: false, // (it follows the game's events: 'album', 'inventory', … — no 1 Hz rebuild under the finger)
+      render: (t) => (t === 'album' ? this.renderAlbum() : t === 'ribbons' && this.renderRibbons ? this.renderRibbons() : this.renderAchievements()),
+    });
+  }
+
+  // the page the album opens on: one with a prize to claim, else the latest find's, else the oldest open gap
+  albumDefaultPage(st) {
+    const ready = st.pages.find((p) => p.ready);
+    if (ready) return ready.id;
+    let latest = null, at = -1;
+    for (const [id, ms] of Object.entries(this.game.s.album.have || {})) if (ms > at && KEEPSAKES[id]) { at = ms; latest = KEEPSAKES[id].page; }
+    if (latest) return latest;
+    return (st.pages.find((p) => !p.locked && !p.complete) || st.pages[0]).id;
+  }
+
+  // what a page's prize is, in words: 💎4 + 🪣 Copper Well (a voucher is 💎15 until gilding exists)
+  albumPrizeText(def) {
+    const pr = def.prize || {};
+    const g = this.game;
+    const vGems = !g.features?.charm && pr.voucher ? pr.voucher * ALBUM.voucherFallbackGems : 0;
+    const parts = [];
+    if (pr.gems || vGems) parts.push(`💎${(pr.gems || 0) + vGems}`);
+    if (pr.gift && OBJECTS[pr.gift]) parts.push(`${OBJECTS[pr.gift].icon} ${OBJECTS[pr.gift].name}`);
+    if (pr.voucher && !vGems) parts.push(`✨ Gilding voucher${pr.voucher > 1 ? ` ×${pr.voucher}` : ''}`);
+    // the last page crowns the whole album
+    if (def === ALBUM.pages[ALBUM.pages.length - 1]) parts.push(`🏅 ${ALBUM.all.title}`);
+    return parts.join(' + ');
+  }
+
+  renderAlbum() {
+    const g = this.game;
+    const st = g.albumStatus();
+    const wrap = h('div', { class: 'album' });
+    if (!st.open) {
+      wrap.append(h('div', { class: 'album-closed' }, h('div', { class: 'album-closed-ico' }, '📖'),
+        h('div', {}, g.features?.post !== false ? 'Your first keepsake opens Mabel\'s album — a parcel will bring one soon.' : 'Your first keepsake opens Mabel\'s album — keep farming!'),
+        h('div', { class: 'muted small' }, 'Keepsakes turn up while you farm and in parcels — find all 6 on a page for gems and a one-of-a-kind decoration.')));
+      return wrap;
+    }
+    const n = st.pages.length;
+    if (!st.pages.some((p) => p.id === this.albumPageId)) this.albumPageId = this.albumDefaultPage(st);
+    const i = st.pages.findIndex((p) => p.id === this.albumPageId);
+    const p = st.pages[i], def = ALBUM.pages[i];
+    // finds on this page are NEW while it's on screen; the save forgets them right away
+    this.albumNew ||= new Set();
+    if (p.fresh.length) { for (const k of p.fresh) this.albumNew.add(k); queueMicrotask(() => g.albumSeen(p.id)); }
+    const show = (id) => { if (id === this.albumPageId) return; this.albumPageId = id; this.audio.play('click'); this.refreshPanel(); this.uiChanged('tab'); };
+    wrap.append(h('div', { class: 'album-head' }, h('b', {}, '📖 Mabel\'s Keepsake Album'), h('span', { class: 'album-count' }, `${st.found} / ${st.total}`)));
+    wrap.append(h('div', { class: 'album-nav' },
+      h('button', { class: 'album-arrow' + (i > 0 ? '' : ' off'), 'data-guide': 'album:prev', 'aria-label': 'Previous page', onclick: () => { if (i > 0) show(st.pages[i - 1].id); } }, '‹'),
+      h('div', { class: 'album-page-title' }, h('b', {}, `${def.icon} ${def.name}`), h('small', {}, `page ${i + 1} of ${n}`)),
+      h('button', { class: 'album-arrow' + (i < n - 1 ? '' : ' off'), 'data-guide': 'album:next', 'aria-label': 'Next page', onclick: () => { if (i < n - 1) show(st.pages[i + 1].id); } }, '›')));
+    // dots: claimed ● · prize waiting (gold) · this page ◉ · open ○ · locked 🔒
+    wrap.append(h('div', { class: 'album-dots' }, st.pages.map((q, j) => h('button', {
+      class: 'album-dot ' + (q.locked ? 'locked' : q.claimed ? 'claimed' : q.ready ? 'ready' : 'open') + (j === i ? ' current' : ''),
+      'data-guide': `album:page:${q.id}`, title: q.locked ? `${ALBUM.pages[j].name} · level ${q.level}` : ALBUM.pages[j].name, 'aria-label': ALBUM.pages[j].name,
+      onclick: () => show(q.id),
+    }, q.locked ? '🔒' : h('i')))));
+    // the 3×2 page
+    const grid = h('div', { class: 'album-grid' + (p.locked ? ' locked' : '') });
+    for (const [it, icon, name] of def.items) {
+      const id = `${def.id}:${it}`;
+      const have = !p.locked && p.have.includes(id);
+      grid.append(have
+        ? h('div', { class: 'album-card' + (this.albumNew.has(id) ? ' new' : '') }, h('span', { class: 'ac-ico' }, icon), h('small', { class: 'ac-name' }, name),
+          this.albumNew.has(id) ? h('em', { class: 'ac-new' }, 'NEW') : null)
+        : h('div', { class: 'album-card missing' }, h('span', { class: 'ac-ico' }, '?'), h('small', { class: 'ac-name' }, p.locked ? '' : 'not found')));
+    }
+    if (p.locked) grid.append(h('div', { class: 'album-lock' }, `🔒 Opens at level ${p.level}`));
+    wrap.append(grid);
+    wrap.append(h('div', { class: 'album-hint muted small' }, `${def.hint} · parcels help your oldest page`));
+    const left = def.items.length - p.found;
+    wrap.append(h('div', { class: 'album-prize' + (p.ready ? ' ready' : '') },
+      h('div', { class: 'ap-text' }, h('small', {}, 'Page prize'), h('b', {}, this.albumPrizeText(def))),
+      p.ready ? h('button', { class: 'btn small claim-prize', 'data-guide': `album:claim:${def.id}`, onclick: () => this.ctrl.claimAlbumPage?.(def.id) }, 'Claim prize!')
+        : h('span', { class: 'ap-state muted small' }, p.claimed ? '✓ Claimed' : p.locked ? `🔒 Lv ${p.level}` : `${left} more to find`)));
+    // the long goals: the launch album (pages 1–8: the Curio Cabinet), then all 12
+    const claimed = st.pages.filter((q) => q.claimed).length;
+    const launchDone = st.pages.slice(0, ALBUM.launchPages).filter((q) => q.claimed).length;
+    wrap.append(h('div', { class: 'album-foot muted small' }, !st.launch
+      ? `${OBJECTS[ALBUM.launch.gift]?.icon || '🎁'} ${OBJECTS[ALBUM.launch.gift]?.name || 'Launch album'}: ${launchDone} / ${ALBUM.launchPages} pages`
+      : st.all ? `🏅 ${ALBUM.all.title} — every page is complete!` : `🏅 ${ALBUM.all.title}: ${claimed} / ${n} pages`));
     return wrap;
   }
 
@@ -2004,7 +2125,9 @@ export class HUD {
   // chapter: a CHAPTERS entry {id, name, icon, reward:{gems, gift}} (or its id); next: the following
   // chapter (looked up when omitted, null for none). Rewards were already paid by the model — this is
   // the celebration. onOpen() runs once the chest is opened (button, Esc or Enter).
-  showChest({ chapter, next, onOpen } = {}) {
+  // custom: any other prize chest (an album page): { kicker, icon, title, tiles: grant() tiles, note }
+  showChest({ chapter, next, onOpen, custom } = {}) {
+    if (custom) return this.showPrizeChest(custom, onOpen);
     const chapters = CONFIG.CHAPTERS || [];
     const ch = typeof chapter === 'object' && chapter ? chapter : chapters.find((c) => c.id === chapter);
     if (!ch) { onOpen?.(); return null; }
@@ -2028,6 +2151,41 @@ export class HUD {
       if (gemsItem && this.ctrl.effects) {
         const r = gemsItem.getBoundingClientRect();
         for (let i = 0; i < Math.min(3, reward.gems); i++) this.ctrl.effects.flyFrom(r.left + r.width / 2, r.top + r.height / 2, '💎', this.gemsPill, { delay: i * 90 });
+      }
+      onOpen?.();
+    });
+    return back;
+  }
+
+  // A prize chest (an album page, the launch album): the model already paid it — tiles are grant()'s reward tiles.
+  // Gems fly to the 💎 pill when it opens; the decorations are placed afterwards by the caller (onOpen).
+  showPrizeChest(c, onOpen) {
+    const gems = (c.tiles || []).filter((t) => t.kind === 'gems').reduce((n, t) => n + t.n, 0);
+    const tiles = [];
+    if (gems) tiles.push(h('div', { class: 'lu-item' }, h('span', {}, '💎'), h('small', {}, `${gems} gems`)));
+    for (const t of c.tiles || []) {
+      if (t.kind === 'gift' && OBJECTS[t.type]) tiles.push(h('div', { class: 'lu-item gift' }, h('span', {}, OBJECTS[t.type].icon), h('small', {}, `${OBJECTS[t.type].name} · gift`)));
+      else if (t.kind === 'voucher') tiles.push(h('div', { class: 'lu-item gift' }, h('span', {}, '✨'), h('small', {}, `Gilding voucher${t.n > 1 ? ` ×${t.n}` : ''}`)));
+      else if (t.kind === 'coins') tiles.push(h('div', { class: 'lu-item' }, h('span', {}, '🪙'), h('small', {}, fmtNum(t.n))));
+    }
+    for (const x of c.titles || []) tiles.push(h('div', { class: 'lu-item title' }, h('span', {}, '🏅'), h('small', {}, x)));
+    this.audio.play('levelup');
+    const gemsEl = tiles[0] && gems ? tiles[0] : null;
+    const modal = h('div', { class: 'levelup chest prize-chest' },
+      h('div', { class: 'lu-burst' }),
+      h('div', { class: 'chest-ico' }, '🎁'),
+      h('div', { class: 'chest-kicker' }, c.kicker || 'Prize!'),
+      h('div', { class: 'lu-title chest-title' }, `${c.icon ? c.icon + ' ' : ''}${c.title || ''}`),
+      tiles.length ? h('div', { class: 'lu-list chest-rewards' }, tiles) : null,
+      c.note ? h('div', { class: 'muted small next-unlock' }, c.note) : null,
+      h('button', { class: 'btn wide', 'data-guide': 'modal:chest:open', onclick: () => back._close() }, 'Open! ✨'),
+    );
+    const back = this.showModal('chest', modal, () => {
+      this.audio.play('coin');
+      this.confetti();
+      if (gemsEl && this.ctrl.effects) {
+        const r = gemsEl.getBoundingClientRect();
+        for (let i = 0; i < Math.min(3, gems); i++) this.ctrl.effects.flyFrom(r.left + r.width / 2, r.top + r.height / 2, '💎', this.gemsPill, { delay: i * 90 });
       }
       onOpen?.();
     });

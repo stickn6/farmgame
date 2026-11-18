@@ -670,6 +670,129 @@ test('turn & tilt: 🧭 is revealed at the end of the tour; its keys are guide k
   assert.equal(sim.tap('cam:up'), 0);
 });
 
+// ---------------------------------------------------------------- 🏆 Treasures and Mabel's album (§3.6, §7.5)
+test('treasures keys: every new key is a guide key, Achievements left the Farmhouse, the HUD only renders real keys', async () => {
+  const pages = CFG.ALBUM.pages.map((p) => p.id);
+  const keys = ['btn:trophy', 'treasures:tab:album', 'treasures:tab:ribbons', 'treasures:tab:awards', 'album:prev', 'album:next', 'ribbons:claim',
+    ...pages.flatMap((id) => [`album:page:${id}`, `album:claim:${id}`]), 'farmhouse:tab:progress', 'farmhouse:tab:village', 'farmhouse:tab:farm'];
+  for (const k of keys) assert.ok(isGuideKey(k), k);
+  for (const k of ['farmhouse:tab:achievements', 'album:claim:nope', 'album:page:', 'treasures:tab:shop', 'album:first']) assert.ok(!isGuideKey(k), `not a key: ${k}`);
+  // every literal data-guide in the HUD and the guide layer is a real key (the templated ones are listed above)
+  const { readFileSync } = await import('node:fs');
+  for (const f of ['../src/ui/hud.js', '../src/ui/guide-ui.js']) {
+    const src = readFileSync(new URL(f, import.meta.url), 'utf8');
+    const lits = [...src.matchAll(/'data-guide': '([^']+)'(?=\s*[,})])/g)].map((m) => m[1]);
+    assert.ok(lits.length > 10 || f.includes('guide-ui'), f);
+    for (const k of lits) assert.ok(isGuideKey(k), `${f}: ${k}`);
+    assert.ok(!src.includes('farmhouse:tab:achievements') && !/id: 'achievements'/.test(src), `${f}: no Achievements tab left in the Farmhouse`);
+  }
+});
+
+test('treasures (SimUI): 🏆 opens on a page to claim → Claim prize! → chest → the decoration goes up; Awards otherwise', () => {
+  const g = coachedAt('carrots', 12);
+  const sim = new SimUI(g);
+  // nothing to claim, album closed: Awards
+  sim.tap('btn:trophy');
+  assert.deepEqual([sim.ui.panel.id, sim.ui.panel.tab], ['treasures', 'awards']);
+  sim.closePanel();
+  // the album opens with a keepsake: 🏆 shows it
+  g.giveKeepsake('post', 'meadow:clover');
+  sim.tap('btn:trophy');
+  assert.equal(sim.ui.panel.tab, 'album');
+  assert.equal(sim.tap('album:next'), 0, 'browsing is free');
+  assert.equal(sim.tap('album:page:barn'), 0);
+  sim.tap('treasures:tab:awards');
+  assert.equal(sim.ui.panel.tab, 'awards');
+  sim.closePanel();
+  // a complete page wins over awards
+  for (const [it] of CFG.ALBUM.pages[0].items) g.s.album.have['meadow:' + it] ||= 1;
+  g.s.stats.harvested = 1e6; g.bumpStat('harvest', 1e6);
+  assert.ok(g.achievementsReady() > 0);
+  sim.tap('btn:trophy');
+  assert.equal(sim.ui.panel.tab, 'album');
+  const gems = g.s.gems;
+  sim.tap('album:claim:meadow');
+  assert.equal(g.s.gems, gems + 3);
+  assert.equal(sim.ui.panel, null, 'the panel closes');
+  sim.pump();
+  assert.equal(sim.ui.modal, 'chest');
+  const step = planStep(g, sim.view(), { cache: false });
+  assert.equal(step.target.ui, 'modal:chest:open');
+  sim.tap('modal:chest:open');
+  assert.ok(sim.ui.placing && sim.ui.placing.type === 'bluebath' && sim.ui.placing.gift, 'the Bluebird Bath goes up next');
+  const pl = planStep(g, sim.view(), { cache: false });
+  assert.equal(pl.target.ui, 'place:ok');
+  assert.equal(pl.stepKey, null, 'no Scarecrow line');
+  sim.tap('place:ok');
+  const bath = g.s.objects.find((o) => o.type === 'bluebath');
+  assert.ok(bath && bath.free);
+  assert.deepEqual(g.s.gifts, []);
+  assert.equal(g.claimAlbumPage('meadow'), null);
+  // the launch album: page 8's chest, then its Silver Rooster, then the Curio Cabinet
+  const h = coachedAt('carrots', 30);
+  h.s.coins = 0;
+  const hs = new SimUI(h);
+  h.s.album.open = true;
+  for (const p of CFG.ALBUM.pages.slice(0, 8)) { for (const [it] of p.items) h.s.album.have[`${p.id}:${it}`] = 1; if (p.id !== 'attic') h.s.album.claimed[p.id] = 1; }
+  hs.tap('btn:trophy');
+  hs.tap('album:claim:attic');
+  hs.pump();
+  hs.tap('modal:chest:open');
+  assert.equal(hs.ui.placing?.type, 'silverrooster');
+  hs.tap('place:ok');
+  assert.equal(hs.ui.placing?.type, 'curio', 'then the Curio Cabinet');
+  hs.tap('place:ok');
+  assert.ok(h.s.objects.some((o) => o.type === 'curio') && h.s.objects.some((o) => o.type === 'silverrooster'));
+  assert.ok(h.s.album.launch);
+  assert.ok(h.s.charm.titles.includes('Keeper of Keepsakes'));
+});
+
+test('tip:album: the first keepsake, once, coached or independent — never in the tour or with hints off; tap opens the album', () => {
+  const c = coachedAt('carrots', 4);
+  assert.notEqual(pendingTip(c)?.key, 'tip:album', 'album closed');
+  c.giveKeepsake('post', 'meadow:clover');
+  const tip = pendingTip(c);
+  assert.equal(tip.key, 'tip:album');
+  assert.equal(tip.text, 'Ooh, my old Four-Leaf Clover! It goes in my Keepsake Album 📖 — find all 6 on a page for a prize.');
+  assert.ok([...tip.text].length <= 100, 'the spec\'s line, verbatim (96 characters with the clover)');
+  let opened = null;
+  tip.onTap({ hud: { openTreasures: (t) => { opened = t; } } });
+  assert.equal(opened, 'album');
+  assert.ok(markTipSeen(c, tip));
+  assert.notEqual(pendingTip(c)?.key, 'tip:album', 'once');
+  // the first find names itself (a primed level-8 farm finds something else first)
+  const p = coachedAt('carrots', 8);
+  p.markSeen('tip:5'); p.markSeen('tip:6'); p.markSeen('tip:7'); p.markSeen('tip:8');
+  const id = p.rollKeepsake('animal', 3);
+  assert.ok(id);
+  assert.equal(pendingTip(p).text.includes(CFG.KEEPSAKES[id].name), true);
+  // level tips first; never guided; never with hints off
+  const lv = coachedAt('carrots', 6);
+  lv.giveKeepsake('post', 'meadow:clover');
+  assert.equal(pendingTip(lv).key, 'tip:5');
+  const gd = fresh();
+  gd.giveKeepsake('post', 'meadow:clover');
+  assert.equal(pendingTip(gd), null, 'guided');
+  const off = coachedAt('carrots', 4);
+  off.giveKeepsake('post', 'meadow:clover');
+  off.s.settings.hints = 'off';
+  assert.equal(pendingTip(off), null, 'hints off');
+  // a migrated farm: What's new first, then the album's own intro
+  const w = coachedAt('carrots', 12);
+  for (let l = 5; l <= 12; l++) w.markSeen('tip:' + l);
+  w.markSeen('whatsNew:pending');
+  w.giveKeepsake('post', 'meadow:clover');
+  const wn = pendingTip(w);
+  assert.equal(wn.key, 'tip:whatsNew');
+  markTipSeen(w, wn);
+  assert.equal(pendingTip(w).key, 'tip:album');
+  // the post-L30 page tips are level tips (≤ 80 characters)
+  const hi = coachedAt('carrots', 35);
+  for (let l = 1; l <= 34; l++) hi.markSeen('tip:' + l);
+  assert.equal(pendingTip(hi).key, 'tip:35');
+  assert.ok(pendingTip(hi).text.includes('Starry Nights'));
+});
+
 // ---------------------------------------------------------------- the Post (§2.8)
 // a tour farm in Chapter 1's egg wait (two fed chickens, eggs due 3 minutes after parcel #1)
 function eggWait() {
@@ -897,7 +1020,7 @@ test('guide-follower: guided Meanwhile never plows; every key it was shown is a 
 // ---------------------------------------------------------------- wander fuzz (§7.1 #7)
 // Things a curious player does off-script, between guided taps and reloads every 1–4 sim-minutes:
 // the guide must keep finding a way through Chapter 1. A few seeds squander everything on purpose.
-const PANELS = ['shop', 'barn', 'orders', 'today', 'farmhouse'];
+const PANELS = ['shop', 'barn', 'orders', 'today', 'farmhouse', 'treasures'];
 const DECOR = ['bush', 'fence', 'path', 'flowers', 'oak'];
 const WANDER_SEEDS = Array.from({ length: 30 }, (_, i) => 101 + i);
 const BROKE_SEEDS = new Set([110, 120, 130]);

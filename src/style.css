@@ -754,3 +754,70 @@ button { font-family: inherit; color: inherit; cursor: pointer; border: none; ba
 .level-box { max-width: 100%; min-width: 0; }
 .xp-col { min-width: 0; }
 .next-hint { max-width: min(190px, 100%); }
+
+/* ================================================================ v4: 🏆 Treasures → 📖 Mabel's Keepsake Album */
+.album { display: flex; flex-direction: column; gap: 8px; }
+.album-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; font-size: 16px; }
+.album-count { font-weight: 700; color: var(--wood-dark); background: #ffe9a8; border-radius: 10px; padding: 1px 9px; font-size: 14px; white-space: nowrap; }
+.album-nav { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.album-arrow {
+  width: 40px; height: 40px; flex-shrink: 0; border-radius: 50%; background: #fff; font-size: 26px; font-weight: 700; line-height: 1; color: var(--wood-dark);
+  box-shadow: 0 3px 0 #e3d3ad; display: flex; align-items: center; justify-content: center; padding-bottom: 3px;
+}
+.album-arrow.off { opacity: .35; }
+.album-page-title { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: center; text-align: center; line-height: 1.15; }
+.album-page-title b { font-size: 17px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+.album-page-title small { font-size: 12px; color: var(--muted); font-weight: 600; }
+.album-dots { display: flex; justify-content: center; flex-wrap: wrap; gap: 0; }
+.album-dot { width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; font-size: 11px; padding: 0; background: none; filter: grayscale(.4); }
+.album-dot i { display: block; width: 10px; height: 10px; border-radius: 50%; border: 2px solid #c9b48a; background: #fff; }
+.album-dot.claimed i { background: var(--green); border-color: var(--green-dark); }
+.album-dot.ready i { background: var(--gold); border-color: #d39b00; }
+.album-dot.locked { opacity: .55; }
+.album-dot.current i { width: 14px; height: 14px; box-shadow: 0 0 0 2px #fff, 0 0 0 4px var(--wood); }
+.album-dot.current.locked { opacity: 1; filter: none; background: #fff; border-radius: 50%; box-shadow: 0 0 0 2px var(--wood); }
+.album-grid { position: relative; display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.album-card {
+  position: relative; background: #fff; border-radius: 14px; min-height: 96px; padding: 8px 4px 6px; display: flex; flex-direction: column; align-items: center;
+  justify-content: center; gap: 4px; text-align: center; box-shadow: 0 3px 0 #e3d3ad; overflow: hidden;
+}
+.album-card .ac-ico { font-size: 36px; line-height: 1.1; }
+.album-card .ac-name { font-size: 12px; font-weight: 600; line-height: 1.15; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.album-card.missing { background: rgba(255, 255, 255, .45); box-shadow: none; border: 2px dashed #d6c39b; }
+.album-card.missing .ac-ico { font-size: 28px; font-weight: 700; color: #c9b48a; }
+.album-card.missing .ac-name { color: var(--muted); font-weight: 500; }
+.album-card.new { box-shadow: 0 3px 0 #e3d3ad, 0 0 0 2px var(--gold) inset; }
+.album-card .ac-new {
+  position: absolute; top: 7px; right: -20px; transform: rotate(35deg); background: var(--red); color: #fff; font-style: normal; font-weight: 700;
+  font-size: 9px; letter-spacing: .5px; padding: 1px 22px; box-shadow: 0 1px 0 var(--red-dark);
+}
+.album-grid.locked .album-card { opacity: .6; }
+.album-lock {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; text-align: center; padding: 10px;
+  font-weight: 700; font-size: 16px; color: var(--wood-dark); background: rgba(255, 248, 231, .55); border-radius: 14px;
+}
+.album-hint { text-align: center; line-height: 1.3; }
+.album-prize {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px; background: #fff; border-radius: 14px; padding: 8px 12px;
+  box-shadow: 0 3px 0 #e3d3ad;
+}
+.album-prize.ready { background: #f1ffe8; box-shadow: 0 3px 0 #b7e59f; border: 2px solid var(--green); }
+.album-prize .ap-text { display: flex; flex-direction: column; min-width: 0; line-height: 1.2; }
+.album-prize .ap-text small { font-size: 11px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .4px; }
+.album-prize .ap-text b { font-size: 14px; }
+.album-prize .ap-state { white-space: nowrap; font-weight: 600; }
+.album-prize .claim-prize { flex-shrink: 0; animation: bump 1.2s ease-in-out infinite; }
+.album-foot { text-align: center; }
+.album-closed { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 8px; padding: 22px 16px; background: #fff; border-radius: 16px; box-shadow: 0 3px 0 #e3d3ad; font-weight: 600; }
+.album-closed-ico { font-size: 52px; filter: grayscale(.3); }
+.prize-chest .lu-item.title { background: linear-gradient(#fff, #ffe9a8); }
+.farm-titles { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; }
+.farm-title { background: linear-gradient(#fff6c9, #ffe9a8); border-radius: 10px; padding: 3px 10px; font-weight: 700; font-size: 13px; color: var(--wood-dark); box-shadow: 0 2px 0 #e3d3ad; }
+@media (max-width: 360px) {
+  .album-card { min-height: 88px; }
+  .album-card .ac-ico { font-size: 32px; }
+  .album-dot { width: 22px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .album-prize .claim-prize { animation: none !important; }
+}

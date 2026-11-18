@@ -1,7 +1,7 @@
 // The data-guide keys a guide may point at (pure: shared by the HUD, the planner and the tests).
 // Every element the guide can target carries data-guide="<key>"; world targets (tiles, objects,
 // ghost plots) are not keys. Names are checked against config, so a typo'd key fails the tests.
-import { OBJECTS, ANIMALS, CROPS, RECIPES, ITEMS, STORAGE, PROJECTS } from './config.js';
+import { OBJECTS, ANIMALS, CROPS, RECIPES, ITEMS, STORAGE, PROJECTS, ALBUM } from './config.js';
 
 const alt = (list) => list.map((s) => s.replace(/[^a-z0-9_-]/gi, '')).join('|');
 const objTypes = alt(Object.keys(OBJECTS));
@@ -11,6 +11,7 @@ const recipes = alt(Object.keys(RECIPES));
 const items = alt(Object.keys(ITEMS));
 const stores = alt(Object.keys(STORAGE));
 const projects = alt(Object.keys(PROJECTS));
+const albumPages = alt(ALBUM.pages.map((p) => p.id));
 
 export const GUIDE_KEY_PATTERNS = [
   // guide card and quest card
@@ -53,8 +54,13 @@ export const GUIDE_KEY_PATTERNS = [
   new RegExp(`^storage:(item|sell):(${items})$`),
   // today
   /^today:(gift|post|chore:\d+)$/,
-  // farmhouse panel tabs
-  /^farmhouse:tab:(progress|village|achievements|farm)$/,
+  // farmhouse panel tabs (achievements moved to 🏆 Treasures → Awards)
+  /^farmhouse:tab:(progress|village|farm)$/,
+  // 🏆 Treasures: its tabs, Mabel's album (page arrows, page dots, a page's Claim) and the ribbons' Claim all
+  /^treasures:tab:(album|ribbons|awards)$/,
+  new RegExp(`^album:(claim|page):(${albumPages})$`),
+  /^album:(prev|next)$/,
+  /^ribbons:claim$/,
   // visitor
   /^visitor:sell$/,
   // modals

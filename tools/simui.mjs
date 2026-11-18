@@ -5,7 +5,7 @@
 //
 //   const f = new GuideFollower(game, { advance: (sec) => { t += sec * 1000; } });
 //   const report = f.run({ maxSec: 90 * 60, until: (g) => g.s.quest.index >= QUESTS.length });
-import { planStep, nextMode, placementSpot, plantCap, shouldAutoShowDaily, graduationPending, reserves, mailboxNear } from '../src/game/guide.js';
+import { planStep, nextMode, placementSpot, plantCap, shouldAutoShowDaily, graduationPending, reserves, mailboxNear, fieldCentre } from '../src/game/guide.js';
 import { OBJECTS, ANIMALS, CROPS, QUESTS, CHAPTERS } from '../src/game/config.js';
 
 // §7.2: 4 s per tap, 3 s per new Mabel line, double for first-time UI, 6 s per level-up modal
@@ -19,6 +19,7 @@ export class SimUI {
     this.cost = { ...TAP_COSTS, ...(opts.cost || {}) };
     this.ui = { panel: null, placing: null, tool: 'hand', modal: null, popover: null, interrupt: null, postOpened: false };
     this.postGift = null; // a parcel's decor to put up once its modal closes (the Mailbox)
+    this.albumGifts = []; // an album page's decorations, put up once its chest is opened
     this.queue = []; // modals waiting for a free screen: { kind, prio }
     this.usedUi = new Set(); // key families tapped before (first-time UI costs double)
     this.taps = 0;
@@ -77,6 +78,15 @@ export class SimUI {
 
   closePanel() { this.ui.panel = null; }
 
+  // 🏆 opens on something to claim (album page → ribbons → awards), else the album once it's open, else Awards (hud.js)
+  treasuresTab() {
+    const g = this.g;
+    if (g.albumPagesReady().length) return 'album';
+    if (g.features?.charm && g.charmStatus?.()?.ready) return 'ribbons';
+    if (g.achievementsReady()) return 'awards';
+    return g.albumOpen() ? 'album' : 'awards';
+  }
+
   // 📬 (the pill, the Today row or the Mailbox): the parcel modal, never queued (the player opens it)
   openPost() {
     if (!this.g.postStatus().ready) return;
@@ -113,7 +123,17 @@ export class SimUI {
     // a failed build (coins, limits) cancels instead of looping on the ghost
     this.ui.placing = null;
     if (grad) g.markSeen('grad:gift');
+    this.nextAlbumGift();
     return o;
+  }
+
+  // the launch album's Curio Cabinet goes up after the page's own decoration
+  nextAlbumGift() {
+    const g = this.g;
+    while (this.albumGifts.length && !this.ui.placing && !this.ui.modal) {
+      const gift = this.albumGifts.shift();
+      if ((g.s.gifts || []).includes(gift)) { this.startPlacement(gift, { gift: true, near: fieldCentre(g) }); return; }
+    }
   }
 
   // ------------------------------------------------------------ the farm, as main.js does it
@@ -218,11 +238,23 @@ export class SimUI {
         else if (b === 'barn') this.openPanel('barn', { tab: pref('barn', 'silo') });
         else if (b === 'orders') this.openPanel('orders', { tab: pref('orders', 'orders') });
         else if (b === 'today') this.openPanel('today');
-        else if (b === 'trophy') this.openPanel('farmhouse', { tab: 'achievements' });
+        else if (b === 'trophy') this.openPanel('treasures', { tab: pref('treasures', this.treasuresTab()) });
         else if (b === 'settings') this.openPanel('farmhouse', { tab: 'farm' });
         else if (b === 'post') this.openPost();
         break;
       case 'panel': this.closePanel(); break;
+      case 'treasures': if (b === 'tab' && u.panel) u.panel.tab = c; break;
+      case 'album':
+        // Claim prize!: paid now; the panel closes, the chest queues, then the decorations go up
+        if (b === 'claim') {
+          const r = g.claimAlbumPage(c);
+          if (!r) break;
+          this.closePanel();
+          this.albumGifts.push(...[r.gift, r.launch?.gift].filter(Boolean));
+          this.enqueue('chest');
+        } else sec = 0; // ‹ › and the page dots only browse
+        break;
+      case 'ribbons': if (b === 'claim') g.claimRibbons?.(); break;
       case 'shop':
       case 'storage':
       case 'orders':
@@ -238,7 +270,7 @@ export class SimUI {
         break;
       case 'place':
         if (b === 'ok') this.confirmPlacement();
-        else if (b === 'cancel') { if (u.placing?.gift && u.placing.type === CHAPTERS[0].reward.gift && graduationPending(g)) g.markSeen('grad:gift'); u.placing = null; }
+        else if (b === 'cancel') { if (u.placing?.gift && u.placing.type === CHAPTERS[0].reward.gift && graduationPending(g)) g.markSeen('grad:gift'); u.placing = null; this.nextAlbumGift(); }
         break;
       case 'seed':
         if (b === 'more') this.setTool('seed');
@@ -286,6 +318,8 @@ export class SimUI {
         if (b === 'daily') { g.claimDaily(); if (grad) g.markSeen('grad:daily'); }
         if (b === 'chest' && grad) g.markSeen('grad:chest');
         this.closeModal();
+        // an album page's chest: its decoration goes up next
+        if (b === 'chest') this.nextAlbumGift();
         break;
       }
       case 'bubble': this.tapBubble(b); break;

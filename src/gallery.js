@@ -1,12 +1,16 @@
-// Dev-only model gallery: /gallery.html?keys=coop,cow,crop:wheat:3:0  (or ?set=debris)
-// Lays out the requested models in a grid with labels, for visual review of assets.
+// Dev-only model gallery: /gallery.html?keys=coop,cow,crop:wheat:3:0  (or ?set=debris, ?set=album)
+// Lays out the requested models in a grid with labels, for visual review of assets. A recoloured decoration's
+// type (bluebath, goldlamp, …) draws its model with its tint.
 import * as THREE from 'three';
 import { makeObject, BUILDERS } from './game/assets.js';
+import { OBJECTS } from './game/config.js';
+import { applyTint, tintOf } from './game/views.js';
 import './game/models/index.js';
 
 // named presets for ?set=
 const SETS = {
   debris: 'weed,weed:1,weed:2,stone,stone:1,stone:2,stump,stump:1,stump:2,soil,scarecrow,birdbath',
+  album: 'bluebath,copperwell,rosepicnic,blossomarch,harvestmill,mossfountain,lilacgazebo,silverrooster,curio,skyballoon,goldscarecrow,goldlamp,blossomoak,frostpine,mailbox:up',
 };
 
 const params = new URLSearchParams(location.search);
@@ -42,7 +46,8 @@ keys.forEach((k, i) => {
   const c = i % cols, r = Math.floor(i / cols);
   const x = (c - (cols - 1) / 2) * cell, z = (r - (rows - 1) / 2) * cell;
   let obj;
-  try { obj = makeObject(k); } catch (e) { console.error(k, e); return; }
+  const def = !BUILDERS[k.split(':')[0]] && OBJECTS[k];
+  try { obj = def ? applyTint(makeObject(def.model || k), tintOf(k)) : makeObject(k); } catch (e) { console.error(k, e); return; }
   obj.position.set(x, 0, z);
   scene.add(obj);
   const tile = new THREE.Mesh(new THREE.PlaneGeometry(cell - 0.3, cell - 0.3), new THREE.MeshStandardMaterial({ color: (r + c) % 2 ? '#86cf5f' : '#74bf50' }));
