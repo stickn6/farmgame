@@ -8,6 +8,7 @@ import * as CFG from '../src/game/config.js';
 import {
   planStep, recommendIdle, reserves, questBlock, need, earn, PLANNERS, shouldAutoShowDaily, nextMode, isGuideKey,
   pendingInterrupt, graduationPending, plantCap, placementSpot, levelUpGo, pendingTip, seedList, questCardInfo, hardBeat, markTipSeen,
+  post1LineDue,
 } from '../src/game/guide.js';
 import { GuideFollower, SimUI } from './simui.mjs';
 
@@ -699,6 +700,15 @@ test('turn & tilt: 🧭 is revealed at the end of the tour; its keys are guide k
   assert.equal(pendingTip(c, { cameraTipDue: true }).key, 'tip:camera');
   assert.ok(pendingTip(c, { cameraTipDue: true }).text.length <= 90);
   assert.equal(typeof pendingTip(c, { cameraTipDue: true }).onTap, 'function');
+  // its wording follows the pointer (a mouse can't twist) and the two-finger turn setting; touch is the default
+  const camText = (ctx) => pendingTip(c, { cameraTipDue: true, ...ctx }).text;
+  assert.equal(camText({}), 'Tip: twist two fingers to turn your farm — or tap 🧭 to turn and tilt.');
+  assert.equal(camText({ coarse: true }), camText({}));
+  assert.ok(!/twist|fingers/.test(camText({ coarse: false })) && /click 🧭/.test(camText({ coarse: false })) && /Q\/E/.test(camText({ coarse: false })), camText({ coarse: false }));
+  c.s.settings.twist = false;
+  assert.ok(!/twist|fingers/.test(camText({ coarse: true })) && camText({ coarse: true }).includes('🧭'), camText({ coarse: true }));
+  for (const coarse of [true, false, undefined]) assert.ok(camText({ coarse }).length <= 90);
+  c.s.settings.twist = true;
   advance(30 * 60);
   assert.equal(pendingTip(c)?.key, 'tip:camera', '30 minutes in');
   // level tips come first
@@ -987,6 +997,73 @@ test('post (tour): parcel #1 at 5:00 is the egg wait\'s Meanwhile with Mabel\'s 
     assert.ok(![st.target?.ui, st.meanwhile?.target?.ui].includes('btn:post'), 'graduation is untouched');
     grad.markSeen(['grad:chest', 'grad:gift', 'grad:daily', 'grad:end'][i]);
   }
+});
+
+test('post: parcel #1 that turned up after the eggs (a quick player) gets Mabel\'s post1 line once after the tour', () => {
+  // at ~1.5 s per tap the eggs come back before 5:00: the parcel is ready during the Bakery steps, the tour never waits again
+  const g = seeded(3, () => {
+    const gg = fresh();
+    gg.markSeen('welcome');
+    new GuideFollower(gg, { sim: new SimUI(gg, { cost: { tap: 1.5 } }), advance }).run({ maxSec: 15 * 60, until: (x) => x.tutorialMode() !== 'guided' });
+    return gg;
+  });
+  assert.notEqual(g.tutorialMode(), 'guided', 'Chapter 1 done');
+  assert.equal(g.s.post.n, 0, 'parcel #1 still unopened');
+  if (!g.postStatus().ready) t = g.s.post.nextAt;
+  assert.ok(g.hasSeen('grad:end'));
+  assert.equal(post1LineDue(g), true, 'the line is owed');
+  g.markSeen('line:post1'); // shown (or the tour showed it during the egg wait)
+  assert.equal(post1LineDue(g), false, 'once');
+  // never in the tour, with hints off, after a skipped tour, once opened, or before the parcel is there
+  const tour = fresh();
+  tour.markSeen('welcome');
+  tour.s.post.nextAt = tour.now();
+  assert.equal(post1LineDue(tour), false, 'guided: the tour shows it as the Meanwhile');
+  const skip = coachedAt('orders3', 3);
+  skip.s.post.nextAt = skip.now();
+  assert.equal(skip.s.post.n, 0);
+  assert.equal(post1LineDue(skip), false, 'skipped tour: tour lines seen');
+  const off = coachedAt('orders3', 3); // as a quick graduate: the tour's post1 line never shown
+  delete off.s.tutorial.seen['line:post1'];
+  off.s.post.nextAt = off.now();
+  assert.equal(post1LineDue(off), true);
+  off.s.settings.hints = 'off';
+  assert.equal(post1LineDue(off), false, 'hints off');
+  off.s.settings.hints = 'glow';
+  off.s.post.nextAt = off.now() + 60e3;
+  assert.equal(post1LineDue(off), false, 'not ready yet');
+  off.s.post.nextAt = off.now();
+  off.claimPost();
+  assert.equal(post1LineDue(off), false, 'opened');
+});
+
+test('"Earn N coins" goal: Show me never sends you to a parcel or a chore (reward coins don\'t count); a coin block still may', () => {
+  const g = coachedAt('pasture', 12);
+  const idx = CFG.QUESTS.length + 5; // the 6th repeat goal
+  g.s.quest = { index: idx, qid: g.qidFor(idx), progress: 0, notified: false };
+  assert.equal(g.currentQuest().event, 'earn');
+  // a coin-value parcel waiting (pays, as earn() for a coin block sees it)
+  g.s.post.n = 6;
+  g.s.post.nextAt = g.now();
+  assert.equal(earn(g, {}, 500).target?.ui, 'btn:post', 'a coin block: any coins help');
+  let s = planStep(g, {}, { cache: false });
+  assert.notEqual(s.target?.ui, 'btn:post', s.key);
+  assertKeys(s);
+  // opening it pays reward coins, which the goal never counts
+  const p0 = g.questProgress(), c0 = g.s.coins;
+  g.claimPost();
+  assert.ok(g.s.coins > c0);
+  assert.equal(g.questProgress(), p0);
+  // the same for a finished chore
+  g.ensureChores();
+  g.s.chores.list[0].progress = g.s.chores.list[0].count;
+  assert.equal(earn(g, {}, 500).target?.ui, 'btn:today');
+  s = planStep(g, {}, { cache: false });
+  assert.notEqual(s.target?.ui, 'btn:today', s.key);
+  const c1 = g.s.coins;
+  g.claimChore(0);
+  assert.ok(g.s.coins > c1);
+  assert.equal(g.questProgress(), p0);
 });
 
 test('post (coached): after chores in the Meanwhile; earn() only for coin-value parcels; the Mailbox ghost has no Scarecrow line; tips', () => {

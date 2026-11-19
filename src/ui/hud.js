@@ -1028,7 +1028,9 @@ export class HUD {
         h('span', {}, '🧭 Two-finger turn: ', h('b', {}, twist ? 'On' : 'Off')), h('span', { class: 'knob' })),
       h('div', { class: 'cam-row' },
         h('button', { class: 'btn small ghost', onclick: () => { this.closePanel(); this.ctrl.camHome(); } }, '🎥 Reset view'),
-        h('div', { class: 'muted small' }, 'Turn: twist two fingers · 🧭 · Q/E. Tilt: 🧭 · Z/X. Home: hold 🧭 · C.')),
+        h('div', { class: 'muted small' }, matchMedia('(pointer: coarse)').matches
+          ? 'Turn: twist two fingers · 🧭 · Q/E. Tilt: 🧭 · Z/X. Home: hold 🧭 · C.'
+          : 'Turn: 🧭 · Q/E · middle-drag. Tilt: 🧭 · Z/X · Shift+wheel. Home: hold 🧭 · C.')),
     );
   }
 

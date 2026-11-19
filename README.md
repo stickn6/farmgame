@@ -81,7 +81,7 @@ The save also keeps the Post's countdown, the album, ribbon ranks, gilding vouch
 
 **Chapter 1, "A Fresh Start"** (about 7 minutes, levels 1–4) is a guided tour. Mabel's finger points at one thing at a time: harvest the ripe wheat, plant, deliver an order, build a coop, buy and feed chickens, plow, plant carrots, collect eggs (tidying weeds and stones while you wait, and opening your first parcel when the Post arrives at 5 minutes), build a bakery and bake bread. The HUD fills in as each part is needed. Only the first three taps hold the screen, and even those let go after a second missed tap.
 
-Graduation ends the tour. You open a chest (gems and a Scarecrow to place), claim your first daily gift, and Mabel shows you the goal card. 🧭 and the Post's pill join the HUD at this point. "I've farmed before" on her welcome card, or **Skip tour** in ⚙️ Settings, skips straight to the coached mode with the same goals.
+Graduation ends the tour. You open a chest (gems and a Scarecrow to place), claim your first daily gift, and Mabel shows you the goal card. 🧭 and the Post's pill join the HUD at this point. A quick player's eggs can be back before the first parcel arrives; it then turns up during the Bakery steps, and Mabel introduces it right after the tour instead. "I've farmed before" on her welcome card, or **Skip tour** in ⚙️ Settings, skips straight to the coached mode with the same goals.
 
 **Chapters 2 and 3** ("Barnyard Friends", "Open for Business") take the scripted goals to about level 9 or 10. Each chapter's chest holds gems and a decoration, never coins, XP or materials. After that come the endless repeat goals.
 

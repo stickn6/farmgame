@@ -7,7 +7,7 @@ import * as THREE from 'three';
 import './guide.css';
 import { ITEMS, OBJECTS, ANIMALS, CHAPTERS, QUESTS, TUTORIAL, GUIDE, VISITORS, RECIPES, CAMERA, ALBUM } from '../game/config.js';
 import {
-  planStep, need, nextMode, questCardInfo, shouldAutoShowDaily, levelUpGo, pendingTip, graduationPending, fieldCentre, reserves,
+  planStep, need, nextMode, questCardInfo, shouldAutoShowDaily, levelUpGo, pendingTip, graduationPending, fieldCentre, reserves, post1LineDue,
   mailboxNear, markTipSeen,
 } from '../game/guide.js';
 import { tileToWorld } from '../game/world.js';
@@ -764,6 +764,7 @@ export class GuideController {
       this.graduation(step);
       this.autoDaily();
       this.tips();
+      this.post1Catchup();
       this.postAway();
       this.pump();
       const was = this.view?.act?.key;
@@ -1281,6 +1282,8 @@ export class GuideController {
     const g = this.game;
     if (g.tutorialMode() === 'guided' || g.s.settings?.hints === 'off') return;
     if (nowS() - this.lastTipAt < TIP_GAP || this.queue.some((q) => q.kind === 'tip')) return;
+    // the pointer kind picks the camera tip's wording (a mouse can't twist two fingers)
+    this.tipCtx.coarse = !!globalThis.matchMedia?.('(pointer: coarse)').matches;
     const tip = pendingTip(g, this.tipCtx);
     if (!tip) return;
     this.enqueue('tip', () => {
@@ -1289,6 +1292,18 @@ export class GuideController {
       const onTap = tip.onTap ? () => { try { tip.onTap(this); } catch (e) { console.error('tip tap:', e); } } : null;
       this.layer.toastCard(tip.text, { ms: 7000, onTap });
     });
+  }
+
+  // Parcel #1 that the tour never showed (post1LineDue): Mabel's tour line comes once, as a card, after the tour
+  // (it stands in for "came while you were away").
+  post1Catchup() {
+    const g = this.game;
+    if (this.whatsNewSession || !post1LineDue(g)) return;
+    this.postAwayDone = true;
+    this.enqueue('post1', () => {
+      if (!g.markSeen('line:post1')) return;
+      this.postAwayEl = this.layer.toastCard(TUTORIAL.lines.post1, { ms: 7000, onTap: () => this.hud.showPost() });
+    }, () => g.postStatus().ready && g.s.post.n === 0 && g.s.settings?.hints !== 'off');
   }
 
   // "📬 A parcel came while you were away, dear!": once per session, for a parcel that was waiting at load (or turned

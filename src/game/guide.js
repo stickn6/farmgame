@@ -430,6 +430,13 @@ function postStep(g, ui) {
   if (gd && st.n !== 0) return null;
   return reach(ui, uiStep('post', 'btn:post', { chain: ['btn:post', 'modal:post:open'], icon: '📬', label: 'Open your parcel', stepKey: gd ? 'post1' : null }));
 }
+// Parcel #1 ready after the tour without Mabel's post1 line ever shown (F12): a quick player's eggs come back before
+// 5:00, so the parcel turns up during the Bakery steps and Chapter 1 has no wait left to show it in. The UI then
+// gives the line once, as a card. A skipped tour or an older farm has line:post1 seen (TUTORIAL.ch1Lines).
+export function post1LineDue(game) {
+  const g = game;
+  return !guided(g) && g.s.settings?.hints !== 'off' && g.s.post?.n === 0 && !g.hasSeen('line:post1') && g.postStatus().ready;
+}
 // a waiting parcel with coin value (pantry, Big, #5, the office parcel): earn() may send you to open it
 const postPays = (g) => { const c = g.postContents(); return c.coins > 0 || Object.keys(c.items).length > 0; };
 const postCoinsStep = (g, ui) => (postPays(g) ? postStep(g, ui) : null);
@@ -652,15 +659,18 @@ function starvedSellStep(g, ui) {
 
 // ---------------------------------------------------------------- earn (§2.3) and Meanwhile (§2.4)
 // The best way to make n more coins (or XP with { xp: true }, where planting ranks higher).
-export function earn(game, ui = {}, n = 0, { xp = false } = {}) {
+// opts.earnedOnly: an "Earn N coins" goal, where only earned coins count — chore and parcel coins are rewards
+// (addCoins(n, false)), so neither is offered (a waiting one still shows as the Meanwhile and on the HUD).
+export function earn(game, ui = {}, n = 0, { xp = false, earnedOnly = false } = {}) {
   const g = game;
   ui = normUi(ui);
   const tries = xp
     ? [choreStep, collectStep, harvestAny, plantIdle, deliverStep, serveStep, feedStep, makeIdle, debrisStep, plowIdle]
-    : [choreStep, postCoinsStep, deliverStep, serveStep, collectStep, harvestAny, (gg, u) => sellStep(gg, u, 'silo', Math.min(n, 20)) || sellStep(gg, u, 'barn', Math.min(n, 20)),
+    : [earnedOnly ? null : choreStep, earnedOnly ? null : postCoinsStep, deliverStep, serveStep, collectStep, harvestAny,
+      (gg, u) => sellStep(gg, u, 'silo', Math.min(n, 20)) || sellStep(gg, u, 'barn', Math.min(n, 20)),
       starvedSellStep, plantIdle, feedStep, makeIdle, debrisStep, sellFewStep];
   for (const f of tries) {
-    const s = f(g, ui);
+    const s = f && f(g, ui);
     if (s) return { ...s, why: 'quest' };
   }
   return busyStep(g);
@@ -1081,7 +1091,7 @@ export const PLANNERS = {
   storage: storagePlanner,
   fruit: fruitPlanner,
   crate: cratePlanner,
-  earn: (g, ui, q) => earn(g, ui, Math.max(0, q.count - g.questProgress())),
+  earn: (g, ui, q) => earn(g, ui, Math.max(0, q.count - g.questProgress()), { earnedOnly: true }),
   level: (g, ui) => earn(g, ui, 0, { xp: true }),
   gift: (g, ui, q) => giftPlanner(g, ui, q?.filter) || busyStep(g),
 };
@@ -1190,8 +1200,11 @@ export const EXTRA_TIPS = [
     onTap: (guide) => guide.hud.openTreasures?.('album'),
   },
   {
+    // ctx.coarse (the UI's pointer type): false on a mouse, which can't twist; the touch text is the default
     key: 'tip:camera',
-    text: 'Tip: twist two fingers to turn your farm — or tap 🧭 to turn and tilt.',
+    text: (g, ctx) => (ctx.coarse === false ? 'Tip: click 🧭 to turn and tilt your farm — or press Q/E to turn, Z/X to tilt.'
+      : g.s.settings?.twist === false ? 'Tip: tap 🧭 to turn and tilt your farm.'
+        : 'Tip: twist two fingers to turn your farm — or tap 🧭 to turn and tilt.'),
     when: (g, ctx) => !!ctx.cameraTipDue || g.now() - (g.s.createdAt || 0) >= FARM_AGE_TIP,
     onTap: (guide) => { guide.hud.openCamPad?.(); guide.hud.pulseCamBtn?.(); },
   },
