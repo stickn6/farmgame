@@ -12,8 +12,19 @@ export function wrapPi(a) {
   return r - Math.PI;
 }
 
+// Which way things turn on screen (y down): yaw growing turns the farm clockwise, as do a clockwise
+// two-finger twist, Q and the 🧭 pad's ↻; ↺ and E turn it anticlockwise. Each pad arrow turns the farm
+// the way it points, so the pad and the twist agree (spec §1.7 had ↺ = +1, the camera's turn: changed).
+export const PAD_TURN = { left: -1, right: +1 }; // the pad's ↺ / ↻ cells → stepYaw dir
+
+// The 🧭 needle's rotation in degrees (SVG, clockwise positive): it turns with the farm, like a map's compass
+export function needleDeg(yaw) {
+  return ((yaw - CAMERA.yaw0) * 180) / Math.PI;
+}
+
 // One 90° step along the iso diagonals (π/4 + k·π/2). From a diagonal it moves one step; from in between
-// (after a free twist) it goes to the next diagonal in that direction. dir +1 = Q / ↺, −1 = E / ↻.
+// (after a free twist) it goes to the next diagonal in that direction. dir +1 = Q / ↻ (the farm turns
+// clockwise on screen), −1 = E / ↺.
 export function stepYaw(yaw, dir) {
   const g = (yaw - CAMERA.yaw0) / CAMERA.yawStep;
   const r = Math.round(g);

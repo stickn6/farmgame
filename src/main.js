@@ -156,8 +156,9 @@ class Controller {
     this.cursor.hide();
   }
 
+  // e.ground: a delayed touch paint's ground point, taken when the finger touched down (Input.down)
   tileAt(e) {
-    const p = this.world.groundPoint(e.clientX, e.clientY);
+    const p = e.ground || this.world.groundPoint(e.clientX, e.clientY);
     return p ? worldToTile(p) : null;
   }
 

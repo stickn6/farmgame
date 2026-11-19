@@ -204,7 +204,7 @@ To add content, use the reserved levels 31+ (`FUTURE_SLOTS` in config.js). Give 
 |---|---|---|
 | Move camera | drag (Hand tool) or two fingers | drag (Hand) · right-drag · WASD / arrows |
 | Zoom | pinch | mouse wheel · `+` / `-` |
-| Turn | twist two fingers · 🧭 ↺ ↻ · drag 🧭 | `Q` / `E` · middle-drag or Ctrl/⌘+drag |
+| Turn | twist two fingers · 🧭 ↺ ↻ · drag 🧭 | `E` ↺ / `Q` ↻ · middle-drag or Ctrl/⌘+drag |
 | Tilt | 🧭 ▲ Top / ▼ Side · drag 🧭 | `Z` / `X` · `PageUp` / `PageDown` · Shift+wheel · middle-drag |
 | Home view | 🧭 Home · hold 🧭 | `C` / `Home` |
 | Tools | toolbar | `1` Hand · `2` Plow · `3` Seeds · `4` Clear |

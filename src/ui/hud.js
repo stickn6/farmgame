@@ -6,7 +6,7 @@ import {
   ITEMS, CROPS, ANIMALS, OBJECTS, RECIPES, STORAGE, ACHIEVEMENTS, DAILY, VISITORS, MASTERY, PLOTS,
   CHORES, WAGON, PROJECTS, CAMERA, POST, KEEPSAKES, ALBUM, CHARM, xpForLevel, unlocksAtLevel, nextUnlockLevel, oneOfAKind,
 } from '../game/config.js';
-import { isHome } from '../game/camera.js';
+import { isHome, PAD_TURN, needleDeg } from '../game/camera.js';
 
 // What a guide layer can plug into. All optional: with these defaults the game is fully playable unguided.
 const DEFAULT_HOOKS = {
@@ -81,7 +81,7 @@ const CAM_ICONS = {
   right: svg(`<g transform="translate(24 0) scale(-1 1)">${TURN}</g>`),
   home: svg('<circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2.4" fill="currentColor" stroke="none"/><path d="M12 1.5 V4.5 M12 19.5 V22.5 M1.5 12 H4.5 M19.5 12 H22.5"/>'),
 };
-// the compass needle (it turns with the view: ↺ turns it counter-clockwise)
+// the compass needle (it turns with the farm, like a map's compass: ↺ turns both anticlockwise)
 const NEEDLE = `<svg viewBox="-12 -12 24 24" width="24" height="24" aria-hidden="true"><circle r="10.6" fill="#fffdf6" stroke="#d6c39b" stroke-width="1.4"/>
   <g class="cam-needle"><path d="M0 -9.2 L3.3 0 L-3.3 0 Z" fill="#e5554a"/><path d="M0 9.2 L3.3 0 L-3.3 0 Z" fill="#8a6a4a"/></g><circle r="1.5" fill="#fff" stroke="#8a6a4a" stroke-width=".8"/></svg>`;
 const stars = (n, max = 3) => '★'.repeat(n) + '☆'.repeat(Math.max(0, max - n));
@@ -867,9 +867,10 @@ export class HUD {
     }, h('span', { class: 'cam-ico', html: CAM_ICONS[dir] }), h('span', { class: 'cam-lbl' }, label));
     this.camCells = {
       up: cell('up', 'Top', 'Higher view', 'X', () => this.rig.tiltStep(+1)),
-      left: cell('left', 'Left', 'Turn left', 'Q', () => this.rig.rotateStep(+1)),
+      // each arrow turns the farm the way it points, as a two-finger twist does (Q is ↻, E is ↺)
+      left: cell('left', 'Left', 'Turn the farm left', 'E', () => this.rig.rotateStep(PAD_TURN.left)),
       home: cell('home', 'Home', 'Home view', 'C', () => this.ctrl.camHome()),
-      right: cell('right', 'Right', 'Turn right', 'E', () => this.rig.rotateStep(-1)),
+      right: cell('right', 'Right', 'Turn the farm right', 'Q', () => this.rig.rotateStep(PAD_TURN.right)),
       down: cell('down', 'Side', 'Lower view', 'Z', () => this.rig.tiltStep(-1)),
     };
     const c = this.camCells, gap = () => h('span', { class: 'cam-gap' });
@@ -996,9 +997,8 @@ export class HUD {
     if (!rig) return;
     if (force || this._needleYaw == null || Math.abs(rig.yaw - this._needleYaw) > 0.005) {
       this._needleYaw = rig.yaw;
-      // the needle shows which way the camera faces: ↺ / Q (yaw up) turns it counter-clockwise, ↻ / E clockwise
-      // (the farm itself swings the other way, as when you turn your head)
-      this.camNeedle?.setAttribute('transform', `rotate(${((-(rig.yaw - CAMERA.yaw0) * 180) / Math.PI).toFixed(2)})`);
+      // the needle turns with the farm: ↻ / Q / a clockwise twist turn both clockwise, ↺ / E anticlockwise
+      this.camNeedle?.setAttribute('transform', `rotate(${needleDeg(rig.yaw).toFixed(2)})`);
     }
     const away = !isHome(rig.goal.yaw, rig.goal.pitch);
     if (away !== this._camAway) { this._camAway = away; this.camDot.classList.toggle('hidden', !away); }

@@ -1342,6 +1342,147 @@ test('CameraRig: locked rig ignores every turn/tilt path; low tilt keeps out of 
   } finally { if (hadWindow) globalThis.window = oldWindow; else delete globalThis.window; }
 });
 
+// On-screen (y down) bearing of world +x from the camera target, in radians: growing = the farm turned clockwise
+async function screenBearing(cam, target) {
+  const THREE = await import('three');
+  const W = 390, H = 844;
+  const scr = (v) => { const p = v.clone().project(cam); return { x: (p.x + 1) / 2 * W, y: (1 - p.y) / 2 * H }; };
+  const a = scr(target), b = scr(target.clone().add(new THREE.Vector3(4, 0, 0)));
+  return Math.atan2(b.y - a.y, b.x - a.x);
+}
+
+test('🧭 pad: ↺ turns the farm anticlockwise and ↻ clockwise, like a clockwise twist; the needle turns with the farm', async () => {
+  const THREE = await import('three');
+  const { CameraRig } = await import('../src/game/world.js');
+  const { PAD_TURN, needleDeg, twistUpdate, wrapPi } = await import('../src/game/camera.js');
+  const cam = new THREE.PerspectiveCamera(50, 390 / 844, 0.5, 300);
+  const rig = new CameraRig(cam);
+  // turn to the goal at once and measure how far the farm and the needle turned on screen (degrees, + = clockwise)
+  const turn = async (fn) => {
+    const b0 = await screenBearing(cam, rig.target), n0 = needleDeg(rig.yaw);
+    fn();
+    rig.yaw = rig.goal.yaw; rig.apply();
+    return { farm: wrapPi((await screenBearing(cam, rig.target)) - b0) * 180 / Math.PI, needle: needleDeg(rig.yaw) - n0 };
+  };
+  const left = await turn(() => rig.rotateStep(PAD_TURN.left));
+  assert.ok(left.farm < -60 && left.farm > -120, `↺ turns the farm anticlockwise (${left.farm.toFixed(1)}°)`);
+  assert.ok(Math.abs(left.needle + 90) < 1e-9, '↺ turns the needle 90° anticlockwise too');
+  const right = await turn(() => rig.rotateStep(PAD_TURN.right));
+  assert.ok(right.farm > 60 && right.farm < 120, `↻ turns the farm clockwise (${right.farm.toFixed(1)}°)`);
+  assert.ok(Math.abs(right.needle - 90) < 1e-9);
+  // fingers turning clockwise (screen y down: angle grows) turn the farm and the needle clockwise, as ↻ does
+  const st = { angle0: 0, dist0: 200, yaw0: rig.goal.yaw, engaged: false, offset: 0 };
+  const twist = await turn(() => rig.twistTo(twistUpdate(st, { x: 200 - 100 * Math.cos(0.8), y: 400 - 100 * Math.sin(0.8) }, { x: 200 + 100 * Math.cos(0.8), y: 400 + 100 * Math.sin(0.8) }).yaw));
+  assert.ok(twist.farm > 15 && twist.needle > 15, `a clockwise twist turns the farm (${twist.farm.toFixed(1)}°) and needle (${twist.needle.toFixed(1)}°) clockwise`);
+  assert.equal(Math.sign(PAD_TURN.right), Math.sign(twist.needle), '↻ and the twist agree');
+});
+
+test('Input: a touch paint acts on the tile touched even while the camera moves; the pinch follows one pair of fingers', async () => {
+  const THREE = await import('three');
+  const { CameraRig, World, worldToTile } = await import('../src/game/world.js');
+  const { Input } = await import('../src/game/input.js');
+  const hadWindow = 'window' in globalThis, oldWindow = globalThis.window;
+  globalThis.window = { innerWidth: 390, innerHeight: 844, addEventListener() {} };
+  try {
+    const cam = new THREE.PerspectiveCamera(50, 390 / 844, 0.5, 300);
+    const w = Object.create(World.prototype);
+    Object.assign(w, { camera: cam, rig: new CameraRig(cam), raycaster: new THREE.Raycaster(), groundPlane: new THREE.Plane(new THREE.Vector3(0, 1, 0), 0) });
+    const rig = w.rig;
+    rig.setDist(13);
+    // Controller.tileAt: a delayed touch paint carries the ground point from its touch-down
+    const tileAt = (e) => { const p = e.ground || w.groundPoint(e.clientX, e.clientY); return p ? worldToTile(p) : null; };
+    const painted = [];
+    let views = 0;
+    rig.onView = () => views++;
+    const input = new Input({ addEventListener() {}, setPointerCapture() {} }, w, {
+      decide: () => 'paint',
+      onPaint: (e, first) => painted.push({ tile: tileAt(e), first }),
+      onPaintEnd: () => {},
+      onTap: () => {},
+    });
+    const ev = (id, x, y) => ({ pointerId: id, pointerType: 'touch', clientX: x, clientY: y, button: 0 });
+    const key = (t) => `${t.x},${t.z}`;
+    // Plow a tile right after ↻ while the farm is still turning, during a Home / Show me glide, and on a
+    // flicked farm still drifting; the paint starts when the finger lifts or when the ~90 ms wait runs out
+    const cases = {
+      turn: { setup: () => rig.rotateStep(+1), moves: true },
+      glide: { setup: () => rig.glide(new THREE.Vector3(4, 0, 3), 13, 0.6), moves: true },
+      drift: { setup: () => rig.velocity.set(25, 0, 0), moves: false }, // the touch stops it
+    };
+    for (const [name, c] of Object.entries(cases)) {
+      for (const viaTimer of [false, true]) {
+        rig.home(); rig.yaw = rig.goal.yaw; rig.glideAnim = null; rig.velocity.set(0, 0, 0); rig.target.set(-2, 0, -2); rig.setDist(13);
+        c.setup();
+        rig.update(1 / 30);
+        painted.length = 0;
+        const touched = worldToTile(w.groundPoint(320, 260));
+        input.down(ev(1, 320, 260));
+        assert.equal(rig.velocity.lengthSq(), 0, 'a finger on a coasting farm stops it');
+        for (let i = 0; i < 4; i++) rig.update(1 / 30); // the frames while the paint waits for a second finger
+        assert.equal(key(worldToTile(w.groundPoint(320, 260))) !== key(touched), c.moves, `${name}: the camera ${c.moves ? 'moved' : 'held still'}`);
+        if (viaTimer) {
+          await new Promise((r) => setTimeout(r, CFG.CAMERA.armMs + 30));
+          assert.equal(painted.length, 1, 'the wait ran out: it painted');
+        }
+        input.up(ev(1, 320, 260));
+        assert.equal(painted.length, 1);
+        assert.ok(painted[0].first);
+        assert.equal(key(painted[0].tile), key(touched), `${name}: the tile that was touched is the one plowed`);
+      }
+    }
+    rig.glideAnim = null;
+    // two fingers pinch, a third rests on the screen, then one of the pair lifts
+    rig.home(); rig.yaw = rig.goal.yaw; rig.target.set(0, 0, 0); rig.setDist(13);
+    input.twistEnabled = true;
+    input.down(ev(11, 150, 600));
+    input.down(ev(12, 250, 600));
+    assert.equal(painted.length, 1, 'a two-finger gesture paints nothing'); // (the last loop's paint)
+    input.move(ev(11, 148, 600));
+    input.down(ev(13, 250, 702));
+    assert.deepEqual(input.gesture.ids, [11, 12], 'the pinch keeps its pair');
+    const snap = () => ({ yaw: rig.yaw, dist: rig.dist, x: rig.target.x, z: rig.target.z });
+    let s0 = snap();
+    input.move(ev(13, 280, 760));
+    assert.deepEqual(snap(), s0, 'the extra finger moving does nothing');
+    const g0 = input.gesture;
+    input.up(ev(13, 280, 760));
+    input.down(ev(13, 250, 702));
+    assert.equal(input.gesture, g0, 'the extra finger lifting changes nothing');
+    s0 = snap();
+    input.up(ev(11, 148, 600));
+    assert.deepEqual(input.gesture.ids, [12, 13], 'the pinch goes on with the fingers left');
+    input.move(ev(12, 251, 600));
+    const s1 = snap();
+    assert.ok(Math.abs(s1.yaw - s0.yaw) < 1e-9, `no turn when a pair finger lifts (${((s1.yaw - s0.yaw) * 180 / Math.PI).toFixed(1)}°)`);
+    assert.ok(Math.abs(s1.dist - s0.dist) < 0.2, `no zoom jump (${s0.dist.toFixed(2)} → ${s1.dist.toFixed(2)})`);
+    assert.ok(Math.hypot(s1.x - s0.x, s1.z - s0.z) < 0.1, 'no pan jump');
+    // the new pair still twists: 40° clockwise about its middle turns the farm (40° − 15° engage) clockwise
+    const mid = { x: 250.5, y: 651 }, r0 = Math.hypot(1.5, 102) / 2, a0 = Math.atan2(102, -1.5), a1 = a0 + 40 * Math.PI / 180;
+    input.move(ev(12, mid.x - r0 * Math.cos(a1), mid.y - r0 * Math.sin(a1)));
+    input.move(ev(13, mid.x + r0 * Math.cos(a1), mid.y + r0 * Math.sin(a1)));
+    assert.ok(Math.abs((rig.yaw - s0.yaw) * 180 / Math.PI - 25) < 2, `the new pair twists (${((rig.yaw - s0.yaw) * 180 / Math.PI).toFixed(1)}°)`);
+    views = 0;
+    input.up(ev(12, 0, 0));
+    assert.equal(input.gesture.mode, 'pan', 'one finger left: it pans');
+    assert.equal(views, 1, 'the twist ended: the view is saved');
+    input.up(ev(13, 0, 0));
+    assert.equal(input.gesture, null);
+    // a pair finger lifting with two others still down ends an engaged twist too (snapped and saved)
+    input.down(ev(21, 150, 600)); input.down(ev(22, 250, 600)); input.down(ev(23, 60, 800));
+    input.move(ev(22, 200 + 50 * Math.cos(0.6), 600 + 50 * Math.sin(0.6)));
+    assert.ok(input.gesture.twist.engaged);
+    views = 0;
+    input.up(ev(21, 0, 0));
+    assert.equal(views, 1);
+    assert.deepEqual(input.gesture.ids, [22, 23]);
+    assert.equal(input.gesture.twist.engaged, false);
+    assert.equal(input.gesture.twist.yaw0, rig.goal.yaw, 'measured from the view now');
+    for (const id of [22, 23]) input.up(ev(id, 0, 0));
+    assert.equal(input.gesture, null);
+    assert.equal(painted.length, 1, 'no finger of any pinch painted');
+  } finally { if (hadWindow) globalThis.window = oldWindow; else delete globalThis.window; }
+});
+
 test('settings: the camera view and two-finger turn are saved; new farms default to Home and on', () => {
   const st = new MemStorage();
   const g = fresh(st);

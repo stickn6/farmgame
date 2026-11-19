@@ -2,7 +2,8 @@
 //  - one finger / left mouse: either "paint" (tools, swipe-harvest, moving a ghost) or "pan" (decided by controller).
 //    A touch paint waits CAMERA.armMs for a second finger before it starts (moving or lifting starts it at once),
 //    so a two-finger gesture never harvests, plows, plants, clears or moves a ghost.
-//  - two fingers: pinch zoom + pan, and (once twistEnabled) a twist turns the farm about the fingers
+//  - two fingers: pinch zoom + pan, and (once twistEnabled) a twist turns the farm about the fingers. The pinch
+//    follows one pair: a third finger is ignored, and when one of the pair lifts it starts afresh on the fingers left.
 //  - mouse: wheel zoom, Shift+wheel tilt, right-drag pan, middle-drag or Ctrl/⌘+left-drag orbit (turn + tilt)
 //  - keyboard: WASD/arrows pan, +/- zoom (turn / tilt / Home keys live in main.js onKey)
 //  - cameraLocked (guide hard beats): pan / pinch / twist / orbit / wheel / key moves do nothing; taps and paint still work
@@ -102,10 +103,14 @@ export class Input {
       this.gesture = g;
       if (mode === 'pan') this.startPan(e.clientX, e.clientY);
       else if (mode === 'paint') {
+        // a finger (or click) on a coasting farm stops it, as a pan does: the swipe works on ground that holds still
+        this.rig.velocity.set(0, 0, 0);
         if (e.pointerType === 'touch') {
-          // paint arming: wait for a possible second finger (a timer, not update(), which pauses while locked)
+          // paint arming: wait for a possible second finger (a timer, not update(), which pauses while locked).
+          // The tile is the one under the finger now (`ground`), not after the wait: a turn, glide or drift may
+          // still be moving the camera, and the first paint must hit the tile that was touched (as decide() saw).
           g.armed = false;
-          g.pending = { clientX: e.clientX, clientY: e.clientY, pointerId: e.pointerId, pointerType: e.pointerType };
+          g.pending = { clientX: e.clientX, clientY: e.clientY, pointerId: e.pointerId, pointerType: e.pointerType, ground: this.world.groundPoint(e.clientX, e.clientY, new THREE.Vector3()) };
           clearTimeout(this.armTimer);
           this.armTimer = setTimeout(() => { if (this.gesture === g) this.arm(); }, CAMERA.armMs);
         } else this.h.onPaint(e, true);
@@ -117,15 +122,22 @@ export class Input {
         if (!g.armed) this.disarm();
         else this.h.onPaintEnd && this.h.onPaintEnd(true);
       }
-      const [a, b] = [...this.pointers.values()];
-      const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
-      const dist = Math.hypot(a.x - b.x, a.y - b.y);
-      this.gesture = {
-        mode: 'pinch', startDist: dist, startCam: this.rig.dist, moved: true,
-        twist: { angle0: Math.atan2(b.y - a.y, b.x - a.x), dist0: dist, yaw0: this.rig.goal.yaw, engaged: false, offset: 0 },
-      };
-      this.startPan(mx, my);
+      this.startPinch(...this.pointers.keys());
     }
+    // a third finger (palm, resting thumb) is not part of the pinch: it is ignored until one of the pair lifts
+  }
+
+  // The pinch / twist follows one pair of fingers (ids), measured from where they are now. Also re-based on
+  // the fingers still down when one of the pair lifts, so a new pair never inherits the old pair's start.
+  startPinch(idA, idB) {
+    const a = this.pointers.get(idA), b = this.pointers.get(idB);
+    const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+    const dist = Math.hypot(a.x - b.x, a.y - b.y);
+    this.gesture = {
+      mode: 'pinch', ids: [idA, idB], startDist: dist, startCam: this.rig.dist, moved: true,
+      twist: { angle0: Math.atan2(b.y - a.y, b.x - a.x), dist0: dist, yaw0: this.rig.goal.yaw, engaged: false, offset: 0 },
+    };
+    this.startPan(mx, my);
   }
 
   // the pending touch paint starts (its timer ran out, the finger moved or lifted)
@@ -153,9 +165,10 @@ export class Input {
     p.x = e.clientX; p.y = e.clientY;
     const g = this.gesture;
     if (!g) return;
-    if (g.mode === 'pinch' && this.pointers.size >= 2) {
-      if (this._locked) return;
-      const [a, b] = [...this.pointers.values()];
+    if (g.mode === 'pinch') {
+      if (this._locked || !g.ids.includes(e.pointerId)) return; // an extra finger moving does nothing
+      const a = this.pointers.get(g.ids[0]), b = this.pointers.get(g.ids[1]);
+      if (!a || !b) return;
       // the twist turns the farm about the point between the fingers: doPan below re-anchors the grabbed ground there
       if (this.twistEnabled && g.twist) {
         const r = twistUpdate(g.twist, a, b);
@@ -188,12 +201,17 @@ export class Input {
     const g = this.gesture;
     if (!g) return;
     if (g.mode === 'pinch') {
-      if (this.pointers.size <= 1 && g.twist?.engaged) {
+      if (!g.ids.includes(e.pointerId)) return; // an extra finger lifting changes nothing
+      if (g.twist?.engaged) {
         g.twist.engaged = false;
         this.rig.snapYaw();
         this.rig.onView?.();
       }
-      if (this.pointers.size === 1) {
+      if (this.pointers.size >= 2) {
+        // a third finger was down: the pinch goes on with the pair finger left and that one, from here
+        const keep = g.ids.find((id) => id !== e.pointerId);
+        this.startPinch(keep, [...this.pointers.keys()].find((id) => id !== keep));
+      } else if (this.pointers.size === 1) {
         // continue panning with the remaining finger, never treat as tap
         const [id, p] = [...this.pointers.entries()][0];
         this.gesture = { mode: 'pan', id, moved: true, sx: p.x, sy: p.y };

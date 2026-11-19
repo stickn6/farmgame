@@ -63,7 +63,7 @@ export class CameraRig {
   stopGlide() { this.glideAnim = null; this.goal.target = null; }
 
   // ---------------------------------------------------------------- turn & tilt (§1.4)
-  // 90° along the iso diagonals: dir +1 = Q / ↺, −1 = E / ↻
+  // 90° along the iso diagonals: dir +1 = Q / ↻ (the farm turns clockwise on screen), −1 = E / ↺
   rotateStep(dir) {
     if (this.locked) return;
     this.goal.yaw = stepYaw(this.goal.yaw, dir);
