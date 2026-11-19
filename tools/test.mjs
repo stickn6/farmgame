@@ -1546,6 +1546,27 @@ test('post contents: the welcome five, the 4-cycle, P(L), the pantry worth exact
   assert.equal(oc.note, CFG.POST.office.note);
 });
 
+test("Kip's parcel (#3): his note promises the clover only while the album lacks it; found first → another note and piece", () => {
+  const kip = (owned) => {
+    const g = albumAt(8);
+    if (owned) assert.equal(g.giveKeepsake('crop', 'meadow:clover'), 'meadow:clover', 'found while farming first');
+    g.s.post = { n: 2, nextAt: t, lastAt: 0, office: false, notified: false };
+    const shown = g.postContents().note; // the closed parcel's modal
+    const r = g.claimPost();
+    const k = r.tiles.find((x) => x.kind === 'keepsake');
+    return { shown, note: r.note, k: k?.id, gems: r.tiles.find((x) => x.kind === 'gems')?.n };
+  };
+  const a = kip(false);
+  assert.equal(a.note, CFG.POST.welcome[2].note);
+  assert.ok(a.note.includes('four-leaf clover') && a.k === 'meadow:clover' && a.gems === 2);
+  const b = kip(true);
+  assert.equal(b.note, CFG.POST.welcome[2].noteOwned);
+  assert.ok(!/clover/i.test(b.note), 'no clover promised');
+  assert.ok(b.k && b.k !== 'meadow:clover' && b.gems === 2, 'another keepsake comes instead');
+  assert.equal(b.shown, b.note, 'the closed modal and the reveal agree');
+  assert.ok([...b.note].length <= 85);
+});
+
 test('post: zero faucets — 400 parcels at random levels give no XP, no materials, no level-up; grant() refuses materials and XP', () => {
   const g = fresh();
   const r = rng(42);
@@ -1620,6 +1641,14 @@ test('migration v3 → v4: young farms get the welcome, veterans the office parc
   assert.equal(loadSave(v3Save({ level: 1, ageH: 0.02 })).s.post.nextAt, t - 72000 + 5 * 60000, 'a brand-new farm keeps its 5:00');
   for (const s of [v3Save({ level: 4, ageH: 5 }), v3Save({ level: 7, ageH: 1 }), v3Save({ level: 3, ageH: 1, tour: false })]) {
     assert.equal(loadSave(s).s.post.office, true, 'old, past L6 or never toured → office');
+  }
+  // a farm still in the guided tour is young however long ago it was played: the welcome, no office, no What's new
+  for (const s of [v3Save({ level: 2, ageH: 5, mode: 'guided' }), v3Save({ level: 4, ageH: 24, mode: 'guided' })]) {
+    const gt = loadSave(s);
+    assert.deepEqual([gt.s.post.n, gt.s.post.office], [0, false], 'a guided farm gets the welcome ladder');
+    assert.equal(gt.s.post.nextAt, t + 60000, '#1 a minute after the update');
+    assert.ok(!gt.hasSeen('whatsNew:pending'));
+    assert.equal(gt.postStatus().ready, false);
   }
   // an L20 veteran: the office parcel waits now; after it, 8 h and the cycle from the keepsake slot
   const vet = loadSave(v3Save({ level: 20, ageH: 200, mode: 'independent' }));
@@ -2260,6 +2289,61 @@ test('gilding: L31, a base price ≥ 🪙1,500; coins + gems or a voucher; gold 
   const back = new Game({ clock, storage: st });
   assert.equal(back.s.objects.find((o) => o.id === sf.id).gilded, true);
   assert.equal(back.charm().total, sv.charm().total);
+});
+
+test('a one-of-a-kind prize is put away, not lost: back to s.gifts (gilding and all), placed again free; nothing new to claim', () => {
+  const g = bareAt(31);
+  g.s.coins = 1e5; g.s.gems = 100;
+  // an album page prize, through the real claim
+  fillPage(g, 'meadow');
+  assert.equal(g.claimAlbumPage('meadow').gift, 'bluebath');
+  assert.deepEqual(g.s.gifts, ['bluebath']);
+  const bath = g.placeGift('bluebath', ...g.findFreeSpot('bluebath'));
+  assert.ok(bath && bath.free && g.s.gifts.length === 0);
+  const fountain = putDecor(g, 'mossfountain');
+  assert.ok(g.gild(fountain), 'gilded');
+  const mail = putDecor(g, 'mailbox');
+  assert.ok(g.claimRibbons().length > 0, 'the ranks reached so far, claimed');
+  for (const type of [...g.s.gifts]) assert.ok(g.placeGift(type, ...g.findFreeSpot(type)), `ribbon prize ${type} placed`);
+  assert.deepEqual(g.s.gifts, []);
+  const charm0 = g.charm().total, coins0 = g.s.coins, gems0 = g.s.gems, xp0 = g.s.xp, m0 = mats(g);
+  const events = [];
+  g.on('gifts', (x) => events.push([...x]));
+  // put away: no refund, off the farm, back in s.gifts (the gilded one as { type, gilded })
+  assert.equal(g.removeObject(bath.id), 0);
+  assert.equal(g.removeObject(fountain.id), 0);
+  assert.equal(g.removeObject(mail.id), 0);
+  assert.ok(!g.s.objects.some((o) => [bath.id, fountain.id, mail.id].includes(o.id)));
+  assert.deepEqual(g.s.gifts, ['bluebath', { type: 'mossfountain', gilded: true }, 'mailbox']);
+  assert.equal(events.length, 3, "'gifts' goes out for the Shop's 🎁 row");
+  assert.ok(g.charm().total < charm0, 'charm follows what is placed');
+  assert.equal(g.s.coins, coins0);
+  // a shop piece (even a free one) is still just removed
+  const fl = putDecor(g, 'flowers');
+  fl.free = true;
+  g.removeObject(fl.id);
+  assert.equal(g.s.gifts.length, 3, 'buyable decor never goes to s.gifts');
+  // the round trip survives a save
+  const st = new MemStorage();
+  const sv = new Game({ clock, storage: st });
+  sv.s.gifts = JSON.parse(JSON.stringify(g.s.gifts));
+  sv.save();
+  assert.deepEqual(new Game({ clock, storage: st }).s.gifts, g.s.gifts);
+  // placed again: free, the gilded one gilded, charm back where it was
+  const b2 = g.placeGift('bluebath', ...g.findFreeSpot('bluebath'));
+  const f2 = g.placeGift('mossfountain', ...g.findFreeSpot('mossfountain'));
+  const m2 = g.placeGift('mailbox', ...g.findFreeSpot('mailbox'));
+  assert.ok(b2 && f2 && m2 && b2.free && f2.free && m2.free);
+  assert.equal(f2.gilded, true, 'keeps its gilding');
+  assert.ok(!b2.gilded && !m2.gilded);
+  assert.deepEqual(g.s.gifts, []);
+  assert.equal(g.charm().total, charm0);
+  assert.equal(g.s.coins, coins0);
+  // nothing new to claim from the round trip: the page, the ribbons; no XP, gems or materials
+  assert.equal(g.claimAlbumPage('meadow'), null);
+  assert.equal(g.charmStatus().ready, 0);
+  assert.deepEqual([g.s.xp, g.s.gems, mats(g)], [xp0, gems0, m0]);
+  assert.equal(g.gildCost(f2), null, 'already gilded');
 });
 
 test('charm RNG and faucets: claimRibbons and gild never touch Math.random; FEATURE_TIPS 19 and 31; unlocks at 19 and 31', () => {

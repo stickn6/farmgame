@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import './style.css';
-import { ITEMS, CROPS, ANIMALS, OBJECTS, STORAGE, PROJECTS, TUTORIAL, CAMERA, KEEPSAKES, ALBUM } from './game/config.js';
+import { ITEMS, CROPS, ANIMALS, OBJECTS, STORAGE, PROJECTS, TUTORIAL, CAMERA, KEEPSAKES, ALBUM, oneOfAKind } from './game/config.js';
 import { isHome } from './game/camera.js';
 import { Game } from './game/state.js';
 import { seedList, plantCap, placementSpot } from './game/guide.js';
@@ -672,6 +672,11 @@ class Controller {
     this.audio.play('plow');
     this.effects.burst(pos, ['#79c453', '#7a5232', '#ffffff'], 12);
     if (refund) this.effects.floatText(pos.setY(0.8), `+🪙${refund}`);
+    // a one-of-a-kind prize is put away, not lost: say where it went
+    if (oneOfAKind(o.type)) {
+      this.effects.floatText(pos.setY(0.8), '📦');
+      this.hud.toast(`📦 ${OBJECTS[o.type].name} put away: Shop → Decor → 🎁 to place it again`, 'info');
+    }
   }
 
   expandLand() {
@@ -830,7 +835,10 @@ class Controller {
     this.placing = { type, rot, x: spot.x, z: spot.z, moveId, gift };
     if (existing) { this.objects.setHidden(moveId, true); this.animals.setHomeHidden(moveId, true); }
     this.tool = 'hand';
-    this.ghost.show(OBJECTS[type].kind === 'tree' ? `tree:${OBJECTS[type].model}:${existing ? this.objects.treeVisual(existing) : 'sapling'}` : (OBJECTS[type].model || type), type, existing ? tintFor(existing) : undefined);
+    // (a gilded prize that was put away goes back up gold)
+    const gilt = gift && (g.s.gifts || []).find((gf) => (typeof gf === 'string' ? gf : gf?.type) === type)?.gilded;
+    this.ghost.show(OBJECTS[type].kind === 'tree' ? `tree:${OBJECTS[type].model}:${existing ? this.objects.treeVisual(existing) : 'sapling'}` : (OBJECTS[type].model || type), type,
+      existing ? tintFor(existing) : gilt ? tintFor({ type, gilded: true }) : undefined);
     this.cursor.hide();
     this.hud.showPlaceBar(type, existing || gift ? 0 : g.objectCost(type), { gift });
     this.updateGhost();

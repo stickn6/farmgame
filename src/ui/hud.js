@@ -4,7 +4,7 @@
 import * as CONFIG from '../game/config.js';
 import {
   ITEMS, CROPS, ANIMALS, OBJECTS, RECIPES, STORAGE, ACHIEVEMENTS, DAILY, VISITORS, MASTERY, PLOTS,
-  CHORES, WAGON, PROJECTS, CAMERA, POST, KEEPSAKES, ALBUM, CHARM, xpForLevel, unlocksAtLevel, nextUnlockLevel,
+  CHORES, WAGON, PROJECTS, CAMERA, POST, KEEPSAKES, ALBUM, CHARM, xpForLevel, unlocksAtLevel, nextUnlockLevel, oneOfAKind,
 } from '../game/config.js';
 import { isHome } from '../game/camera.js';
 
@@ -1317,12 +1317,14 @@ export class HUD {
     return wrap;
   }
 
-  // "🎁 Your gifts": chapter-chest decor waiting to be put up (free, from s.gifts)
+  // "🎁 Your gifts": chapter-chest decor waiting to be put up (free, from s.gifts), and prizes that were put away
+  // ({ type, gilded }: one goes back up gold)
   renderGifts() {
-    const counts = new Map();
+    const counts = new Map(), gilt = new Set();
     for (const gf of this.game.s.gifts || []) {
       const type = giftType(gf);
       if (OBJECTS[type]) counts.set(type, (counts.get(type) || 0) + 1);
+      if (gf?.gilded) gilt.add(type);
     }
     if (!counts.size) return null;
     const row = h('div', { class: 'gift-cards' });
@@ -1335,7 +1337,7 @@ export class HUD {
       } },
       n > 1 ? h('span', { class: 'gift-n' }, '×' + n) : null,
       h('div', { class: 'card-ico' }, d.icon),
-      h('div', { class: 'card-name' }, d.name),
+      h('div', { class: 'card-name' }, (gilt.has(type) ? '✨ ' : '') + d.name),
       h('div', { class: 'btn small' }, 'Place · Free')));
     }
     return h('div', { class: 'gifts' }, h('div', { class: 'gifts-head' }, '🎁 Your gifts', h('span', { class: 'muted small' }, ' · free to place')), row);
@@ -1707,7 +1709,7 @@ export class HUD {
   }
 
   // ---------------------------------------------------------------- decor
-  // Move / Sell; from L19 the charm it adds (💗 60 · counts (2/3)); from L31 on premium pieces ✨ Gild (coins + gems,
+  // Move / Sell (a one-of-a-kind prize: Put away, back to 🎁 Your gifts); from L19 the charm it adds (💗 60 · counts (2/3)); from L31 on premium pieces ✨ Gild (coins + gems,
   // or a voucher). Gilding, and selling a gilded piece (its gilding is never refunded), take a second tap.
   openDecor(o) {
     const d = OBJECTS[o.type];
@@ -1753,12 +1755,14 @@ export class HUD {
         } else if (st.unlocked && !st.gildUnlocked && CHARM.gildBase(o.type) >= CHARM.gildMin) {
           wrap.append(h('div', { class: 'muted small center' }, `✨ Gilding opens at level ${CHARM.gildLevel}: gold, and triple 💗.`));
         }
-        // a free one (starter decor, a gift) refunds nothing; a gilded one's gilding is never refunded
-        const sellText = o.free ? 'Remove' : `Sell 🪙${fmtNum(Math.floor(d.cost / 2))}`;
+        // a free one (starter decor, a gift) refunds nothing; a gilded one's gilding is never refunded. A one-of-a-kind
+        // piece (a prize, never sold) is put away instead, gilding and all: back to Shop → Decor → 🎁, nothing lost
+        const keep = oneOfAKind(o.type);
+        const sellText = keep ? '📦 Put away' : o.free ? 'Remove' : `Sell 🪙${fmtNum(Math.floor(d.cost / 2))}`;
         wrap.append(h('div', { class: 'panel-foot center' },
           h('button', { class: 'btn', onclick: () => { this.closePanel(); this.ctrl.startPlacement(o.type, o.id); } }, '✥ Move'),
-          h('button', { class: 'btn red' + (arm.sell ? ' armed' : ''), onclick: () => {
-            if (o.gilded && !arm.sell) { arm.sell = true; this.audio.play('click'); disarm(); this.refreshPanel(); return; }
+          h('button', { class: 'btn' + (keep ? ' ghost' : ' red') + (arm.sell ? ' armed' : ''), onclick: () => {
+            if (o.gilded && !keep && !arm.sell) { arm.sell = true; this.audio.play('click'); disarm(); this.refreshPanel(); return; }
             this.closePanel();
             this.ctrl.removeObject(o);
           } }, arm.sell ? `${sellText} · the gilding is lost` : sellText),

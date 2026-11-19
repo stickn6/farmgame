@@ -6,6 +6,7 @@ import {
   ITEMS, CROPS, ANIMALS, RECIPES, OBJECTS, QUESTS, REPEAT_QUESTS, ORDERS, START,
   xpForLevel, producibleItems, levelUpReward,
   CHAPTERS, QUEST_MIGRATION_V3, V2_QUEST_COUNT, GUIDE, TUTORIAL, FEATURE_TIPS, tutorialTile, POST, ALBUM, KEEPSAKES, CHARM,
+  oneOfAKind,
 } from './config.js';
 import * as layout from './layout.js';
 
@@ -293,12 +294,13 @@ export class Game extends Emitter {
       s.version = 3;
     }
     if (s.version < 4) {
-      // the Post: a young farm (a tour farm under 4 h old, L ≤ 6) gets the whole welcome; every other farm one
-      // "Post office opening" parcel, waiting now (it doesn't advance n), then the 8-hour cycle
+      // the Post: a young farm (a tour farm under 4 h old, L ≤ 6, or one still in the guided tour, however old) gets
+      // the whole welcome; every other farm one "Post office opening" parcel, waiting now (it doesn't advance n), then
+      // the 8-hour cycle
       const now = nowFor(s, this.clock());
       const created = s.createdAt || now;
       const t = s.tutorial;
-      const young = s.level <= 6 && (t.startedAt || 0) > 0 && now - created < 4 * HOUR_MS;
+      const young = (t.startedAt || 0) > 0 && (t.mode === 'guided' || (s.level <= 6 && now - created < 4 * HOUR_MS));
       s.post = young
         ? { n: 0, nextAt: Math.max(now + MIN_MS, created + postGap(0)), lastAt: 0, office: false, notified: false }
         : { n: POST.welcome.length, nextAt: now, lastAt: 0, office: true, notified: false };
@@ -783,6 +785,9 @@ export class Game extends Emitter {
     return true;
   }
 
+  // Sell a decoration (half price; a free one refunds nothing) or clear a tree. A one-of-a-kind decoration (a parcel,
+  // album page or ribbon prize: never sold) is put away instead: back to s.gifts, gilding and all, to place again for
+  // free from Shop → Decor → 🎁. → the refund, or false
   removeObject(id) {
     const o = this.objById.get(id);
     if (!o) return false;
@@ -792,6 +797,10 @@ export class Game extends Emitter {
     this.s.objects = this.s.objects.filter((x) => x.id !== id);
     this.rebuildOccupancy();
     this.emit('objectRemoved', o);
+    if (oneOfAKind(o.type)) {
+      (this.s.gifts ||= []).push(o.gilded ? { type: o.type, gilded: true } : o.type);
+      this.emit('gifts', this.s.gifts);
+    }
     if (refund) this.addCoins(refund, false);
     if (def.kind === 'tree' && this.treeState(o) === 'dead') this.rollDrop('clearTree', def.harvests * def.harvestXp);
     this.saveSoon();
@@ -819,13 +828,15 @@ export class Game extends Emitter {
   debris() { return this.s.objects.filter((o) => OBJECTS[o.type].kind === 'debris'); }
 
   // Put up a chapter-chest gift: free, no XP, ignores level and building limits. It is marked
-  // free, so removing it later refunds nothing. Uses up one matching entry of s.gifts.
+  // free, so removing it later refunds nothing. Uses up one matching entry of s.gifts ({ type, gilded }: a
+  // gilded one-of-a-kind piece that was put away goes back up gilded).
   placeGift(type, x, z, rot = 0) {
     const gifts = this.s.gifts || [];
     const i = gifts.findIndex((gf) => (typeof gf === 'string' ? gf : gf?.type) === type);
     if (i < 0 || !OBJECTS[type] || !this.canPlace(type, x, z, rot)) return null;
-    gifts.splice(i, 1);
+    const [gf] = gifts.splice(i, 1);
     const o = { id: this.s.nextId++, type, x, z, rot, jobs: [], free: true };
+    if (gf && typeof gf === 'object' && gf.gilded) o.gilded = true;
     if (OBJECTS[type].kind === 'tree') o.plantedAt = this.now();
     this.s.objects.push(o);
     this.rebuildOccupancy();
@@ -1646,9 +1657,10 @@ export class Game extends Emitter {
   }
 
   // ------------------------------------------------------------ the Post (timed gifts)
-  // What parcel n holds when opened at level L (pure: depends only on n, L and the save's office flag; the keepsake
-  // itself is picked at claim time with rand()). → { n, kind, sender, note, wrap, coins, gems, items, keepsake,
-  // keepsakeFallback, gift, place }. kind: welcome | keepsake | pantry | postcard | big | office.
+  // What parcel n holds when opened at level L (pure: depends only on n, L and the save's office flag — and, for a
+  // fixed keepsake, whether the album already has it, which picks its note; the keepsake itself is picked at claim
+  // time with rand()). → { n, kind, sender, note, wrap, coins, gems, items, keepsake, keepsakeFallback, gift, place }.
+  // kind: welcome | keepsake | pantry | postcard | big | office.
   postContents(n = this.s.post.n, L = this.s.level, s = this.s) {
     let base, kind;
     if (s.post?.office) { base = POST.office; kind = 'office'; }
@@ -1657,8 +1669,10 @@ export class Game extends Emitter {
     const sender = typeof base.from === 'function' ? base.from(L, n) : base.from;
     const round = Math.max(0, Math.floor((n - POST.welcome.length) / POST.cycle.length));
     const P = POST.coins(L);
+    // Kip's clover found while farming first: giveKeepsake picks another piece, so his note mustn't promise the clover
+    const owned = typeof base.keepsake === 'string' && !!s.album?.have?.[base.keepsake];
     const c = {
-      n, kind, sender, note: base.note || POST.notes[sender][round % 3], wrap: kind === 'postcard' ? 'postcard' : base.big ? 'big' : 'plain',
+      n, kind, sender, note: (owned && base.noteOwned) || base.note || POST.notes[sender][round % 3], wrap: kind === 'postcard' ? 'postcard' : base.big ? 'big' : 'plain',
       coins: base.coins ? P : 0, gems: base.gems || 0, items: {}, keepsake: base.keepsake || null,
       keepsakeFallback: base.keepsake ? POST.keepsakeFallbackGems : 0, gift: base.gift || null, place: !!base.place,
     };

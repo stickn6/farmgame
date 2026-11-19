@@ -189,7 +189,8 @@ export const OBJECTS = {
   statue: { name: 'Golden Rooster', icon: '🐓', kind: 'decor', size: [1, 1], cost: 20000, level: 20 },
   balloon: { name: 'Hot Air Balloon', icon: '🎈', kind: 'decor', size: [2, 2], cost: 40000, level: 24 },
 
-  // one-of-a-kind decorations (level 99: never sold, never in the Shop list): free gifts that refund nothing.
+  // one-of-a-kind decorations (level 99: never sold, never in the Shop list): free gifts that refund nothing (removing
+  // one puts it away, back to s.gifts: see oneOfAKind).
   // model: whose 3D model they reuse; tint: a recolour of it ('gold' = GOLD; tintDesat: how far its own colours fade to
   // grey first, tintMetal / tintRough: a metal look); charm: for Prettiest Farm
   mailbox: { name: 'Mailbox', icon: '📮', kind: 'decor', size: [1, 1], cost: 0, level: 99, charm: 40, desc: 'The flag goes up when a parcel waits.' },
@@ -216,6 +217,8 @@ export const OBJECTS = {
   stone: { name: 'Stone', icon: '🪨', kind: 'debris', size: [1, 1], cost: 0, level: 99, clear: { coins: 2, xp: 1 } },
   stump: { name: 'Old Stump', icon: '🪵', kind: 'debris', size: [1, 1], cost: 0, level: 99, clear: { coins: 3, xp: 2 } },
 };
+// a one-of-a-kind decoration (a parcel, album page or ribbon prize): never sold, so removing it puts it away instead
+export const oneOfAKind = (type) => OBJECTS[type]?.kind === 'decor' && OBJECTS[type].level >= 99;
 
 // ---------------------------------------------------------------- derived prices & xp
 // Products are worth their inputs plus a premium for the time spent, so every step of a
@@ -792,7 +795,9 @@ export const POST = {
   welcome: [
     { from: 'mabel', gems: 2, note: 'Welcome home, dear! The post comes to the farm now — here\'s a little something.' },
     { from: 'rosa', gems: 2, note: 'Hello, neighbour! I can\'t wait to taste your bread. See you soon! — Rosa' },
-    { from: 'kip', gems: 2, keepsake: 'meadow:clover', note: 'I found a four-leaf clover by your fence! Grandma Mabel says it goes in her album!' },
+    // noteOwned: the note when the clover is already in the album (found while farming first): another piece comes instead
+    { from: 'kip', gems: 2, keepsake: 'meadow:clover', note: 'I found a four-leaf clover by your fence! Grandma Mabel says it goes in her album!',
+      noteOwned: 'Is this treasure?! I found it by your fence. Grandma Mabel says it\'s for her album!' },
     { from: 'hank', gems: 3, gift: 'mailbox', place: true, note: 'The village voted you a proper mailbox! Put it up by the road. — Mayor Hank' },
     { from: 'mabel', gems: 5, coins: true, keepsake: true, big: true, note: 'Something from my attic — and a little pocket money. More comes every 8 hours!' },
   ],
