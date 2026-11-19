@@ -1989,6 +1989,20 @@ export class Game extends Emitter {
     return { ...CHARM.gildCost(base), base, voucher: (this.s.charm.vouchers || 0) > 0 };
   }
 
+  // The farm's 💗 charm that gilding o would add: the top CHARM.perKind of its kind (gilded first, then the oldest, as
+  // in charm()) with o gilded, less the same now. A 4th copy pushes a plain one out of the counted three; with three
+  // gilded ones already counting it adds nothing (gold for looks only).
+  gildGain(o) {
+    o = this.objById.get(typeof o === 'object' ? o?.id : o);
+    if (!o || o.gilded || OBJECTS[o.type]?.kind !== 'decor') return 0;
+    const list = this.s.objects.filter((x) => x.type === o.type);
+    const each = CHARM.of(o.type);
+    const sum = (gild) => list.map((x) => ({ id: x.id, gilded: !!x.gilded || (gild && x.id === o.id) }))
+      .sort((a, b) => (b.gilded ? 1 : 0) - (a.gilded ? 1 : 0) || a.id - b.id).slice(0, CHARM.perKind)
+      .reduce((t, x) => t + each * (x.gilded ? CHARM.gildMult : 1), 0);
+    return sum(true) - sum(false);
+  }
+
   // Gild a premium decoration: pay coins + gems, or one voucher. It shines gold and counts triple. Selling it later
   // refunds only the usual half price (never the gilding). → { o, voucher, coins, gems } | null
   gild(o, { voucher = false } = {}) {

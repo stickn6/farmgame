@@ -82,6 +82,7 @@ export class SimUI {
   treasuresTab() {
     const g = this.g;
     if (g.albumPagesReady().length) return 'album';
+    if (g.albumOpen() && g.s.album.fresh?.length) return 'album';
     if (g.charmStatus().ready) return 'ribbons';
     if (g.achievementsReady()) return 'awards';
     return g.albumOpen() ? 'album' : 'awards';

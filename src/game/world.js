@@ -494,9 +494,11 @@ export class World {
     return this.raycaster.intersectObjects(objects, true);
   }
 
-  project(v, out = new THREE.Vector3()) {
+  // W, H: the viewport, read once by a caller that projects many points between DOM writes (reading innerWidth
+  // after a style write forces a style recalc: Bubbles.update)
+  project(v, out = new THREE.Vector3(), W = window.innerWidth, H = window.innerHeight) {
     out.copy(v).project(this.camera);
-    return { x: (out.x * 0.5 + 0.5) * window.innerWidth, y: (-out.y * 0.5 + 0.5) * window.innerHeight, visible: out.z < 1 };
+    return { x: (out.x * 0.5 + 0.5) * W, y: (-out.y * 0.5 + 0.5) * H, visible: out.z < 1 };
   }
 
   // ---------------------------------------------------------------- framing helpers (guide / placement)

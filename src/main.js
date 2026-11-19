@@ -10,7 +10,7 @@ import { FarmView, ObjectView, AnimalView, DogView, VisitorView, WagonView, Proj
 import { Effects } from './game/effects.js';
 import { Audio } from './game/audio.js';
 import { Input } from './game/input.js';
-import { HUD, fmtTime, fmtNum, postClock } from './ui/hud.js';
+import { HUD, fmtTime, fmtNum } from './ui/hud.js';
 import { Bubbles } from './ui/bubbles.js';
 import { GuideController } from './ui/guide-ui.js';
 import './game/models/index.js';
@@ -352,8 +352,10 @@ class Controller {
     if (this.guide.onKey(e)) return; // Mabel's own welcome / skip question
     const k = e.key.toLowerCase();
     const modal = this.hud.topModal();
-    if (modal) { if (k === 'escape' || k === 'enter') this.hud.closeTopModal(k); return; }
+    // (the modal takes Enter: the browser mustn't also press the HUD button that has focus)
+    if (modal) { if (k === 'escape' || k === 'enter') { e.preventDefault(); this.hud.closeTopModal(k); } return; }
     if (k === 'escape' && this.hud.camPadOpen()) { this.hud.closeCamPad(); return; }
+    if (k === 'escape' && this.hud.postPop) { this.hud.closePostPop(); return; }
     if (k === 'escape') { if (this.hud.panel) this.hud.closePanel(); else if (this.placing) this.cancelPlacement(); else this.setTool('hand'); }
     // turn (90°), tilt and Home: no-ops while a hard beat holds the camera
     if (!e.ctrlKey && !e.metaKey && !e.altKey) {
@@ -485,15 +487,17 @@ class Controller {
     }
     if (def.kind === 'storage') { this.hud.openBarn(def.storage); return; }
     // the Mailbox: its parcel, or when the next one comes
-    if (o.type === 'mailbox') { this.tapMailbox(); return; }
+    if (o.type === 'mailbox') { this.tapMailbox(o); return; }
     if (def.kind === 'decor') this.hud.openDecor(o);
   }
 
-  tapMailbox() {
+  // the Mailbox: a waiting parcel opens; else its decor panel, like any decoration's (the countdown, its 💗,
+  // ✥ Move and 📦 Put away)
+  tapMailbox(o) {
     const st = this.game.postStatus();
     this.audio.play('click');
     if (st.ready) this.hud.showPost();
-    else this.hud.toast(`📪 Next parcel in ${postClock(st.msLeft)}`, 'info');
+    else this.hud.openDecor(o);
   }
 
   bounce(o) {
@@ -786,13 +790,14 @@ class Controller {
   // and the charm it gained float up.
   gild(o, opts = {}) {
     const g = this.game;
-    const before = g.charm().of(o);
+    // the farm's total, not the piece's own value: a gilded 4th copy pushes a plain one out of the counted three
+    const before = g.charm().total;
     const r = g.gild(o, opts);
     if (!r) return null;
     this.audio.play('levelup');
     const pos = objectCenter(g, r.o);
     this.effects.burst(pos.clone().setY(pos.y + 0.6), ['#ffd54a', '#fff3b0', '#ffffff', '#ffb000'], 24, 1.2);
-    const gained = g.charm().of(r.o) - before;
+    const gained = g.charm().total - before;
     this.effects.floatText(pos.clone().setY(pos.y + 1.8), gained > 0 ? `✨ +💗${fmtNum(gained)}` : '✨', 'info');
     this.hud.toast(`✨ ${OBJECTS[r.o.type].name} is gilded!${gained > 0 ? ` +💗${fmtNum(gained)} charm` : ''}`, 'good');
     this.hud.refreshBadges();

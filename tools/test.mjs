@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { Game } from '../src/game/state.js';
 import * as CFG from '../src/game/config.js';
+import { FakeEl, withFakeDom } from './fakedom.mjs';
 
 let t = Date.UTC(2026, 0, 1, 8);
 const clock = () => t;
@@ -2149,7 +2150,7 @@ test('album config: 12 × 6 = 72 unique keepsakes and emoji; prizes are level-99
   // every exclusive (§3.5) is a never-sold, free, level-99 decoration on a real model, with its charm
   const EXCL = { bluebath: ['birdbath', '#8fc9ff', 60], copperwell: ['well', '#f0a868', 55], rosepicnic: ['picnic', '#ffb3b3', 90], blossomarch: ['flowerarch', '#ffc0d9', 185],
     harvestmill: ['windmill', '#ffbe7a', 120], mossfountain: ['fountain', '#b5e8a8', 300], lilacgazebo: ['gazebo', '#d9c6ff', 455], silverrooster: ['statue', '#e3e9f0', 680],
-    curio: [undefined, undefined, 300], skyballoon: ['balloon', '#bfe3ff', 960], blossomoak: ['oak', '#ffc7dd', 90], frostpine: ['pine', '#dff2ff', 90],
+    curio: [undefined, undefined, 300], skyballoon: ['balloon', '#8fd0ff', 960], blossomoak: ['oak', '#ffb3d1', 90], frostpine: ['pine', '#cfeaff', 90],
     goldscarecrow: ['scarecrow', 'gold', 75], goldlamp: ['lamp', 'gold', 75], mailbox: [undefined, undefined, 40] };
   for (const [type, [model, tint, charm]] of Object.entries(EXCL)) {
     const d = CFG.OBJECTS[type];
@@ -2503,6 +2504,276 @@ test('charm RNG and faucets: claimRibbons and gild never touch Math.random; FEAT
   assert.ok(CFG.FEATURE_TIPS[19].includes('💗') && CFG.FEATURE_TIPS[31].startsWith('Gilding!'));
   // gilding shares the golden exclusives' tint
   assert.equal(CFG.CHARM.gold, CFG.GOLD);
+});
+
+// ---------------------------------------------------------------- v4 review (UI): the HUD's panels, gold and tints, bubbles, CSS
+const read = (f) => fs.readFileSync(new URL(f, import.meta.url), 'utf8');
+// a HUD with no DOM of its own: the real methods on fake buttons (openPanel keeps the panel to render it)
+const fakeHud = async (g, extra = {}) => {
+  const { HUD } = await import('../src/ui/hud.js');
+  const hud = Object.create(HUD.prototype);
+  return Object.assign(hud, {
+    game: g, hooks: {}, panel: null, audio: { play() {} }, ctrl: { gild() {}, startPlacement() {}, claimRibbons() {} },
+    toast() {}, closePanel() { this.closed = true; }, refreshPanel() {}, uiChanged() {}, closeSeedPopover() {}, closePostPop() {},
+    refreshPostPill() {}, confetti() {}, revealed: () => false, modalLayer: new FakeEl(),
+    openPanel(p) { this.opened = p; }, openShop(tab) { this.shopTab = tab; },
+  }, extra);
+};
+
+test('gilding a 4th copy: gildGain is what the farm\'s 💗 really gains; the panel says so and offers a voucher only when it adds 💗', async () => {
+  const { fmtNum } = await import('../src/ui/hud.js');
+  const each = CFG.CHARM.of('fountain'), x3 = CFG.CHARM.gildMult;
+  const setup = (gilded) => {
+    const g = bareAt(31);
+    g.s.coins = 1e7; g.s.gems = 1e4; g.s.charm.vouchers = 2;
+    const fs4 = [0, 1, 2, 3].map(() => putDecor(g, 'fountain'));
+    for (const i of gilded) assert.ok(g.gild(fs4[i]));
+    return { g, fs4 };
+  };
+  const panelText = (hud, o) => withFakeDom(() => { hud.openDecor(o); const el = hud.opened.render(); return { text: el.textContent, buttons: el.querySelectorAll('button').map((b) => b.textContent) }; });
+  const cases = [
+    { gilded: [], pick: 3, gain: each * (x3 - 1) }, // three plain count: the gilded 4th replaces one of them (+2×, not +3×)
+    { gilded: [], pick: 0, gain: each * (x3 - 1) }, // one of the counted three
+    { gilded: [0, 1, 2], pick: 3, gain: 0 }, // three gilded ones count already
+    { gilded: [1, 2, 3], pick: 0, gain: 0 }, // the oldest, plain: still three gilded count
+  ];
+  for (const c of cases) {
+    const { g, fs4 } = setup(c.gilded);
+    const o = fs4[c.pick];
+    assert.equal(g.gildGain(o), c.gain, JSON.stringify(c));
+    const hud = await fakeHud(g);
+    const { text, buttons } = await panelText(hud, o);
+    if (c.gain > 0) {
+      assert.ok(text.includes(`Gold, and +💗${fmtNum(c.gain)} charm.`), text);
+      assert.ok(buttons.some((b) => b.includes('voucher')), 'a voucher is offered');
+    } else {
+      assert.ok(text.includes('Gold for looks') && !text.includes('triple'), text);
+      assert.ok(!buttons.some((b) => b.includes('voucher')), 'no scarce voucher for looks only');
+      assert.ok(buttons.some((b) => b.startsWith('✨ Gild for looks')), buttons.join(' | '));
+    }
+    const before = g.charm().total;
+    assert.ok(g.gild(o));
+    assert.equal(g.charm().total - before, c.gain, 'the farm total moves by gildGain');
+    assert.equal(g.gildGain(o), 0, 'already gilded');
+  }
+  // main.js reports the farm's total, not the piece's own value
+  const main = read('../src/main.js');
+  assert.ok(/const before = g\.charm\(\)\.total;[\s\S]*?const gained = g\.charm\(\)\.total - before;/.test(main), 'ctrl.gild compares charm().total');
+});
+
+test('the post strip wraps between its entries; each label keeps its ✓ / ●', async () => {
+  const { HUD } = await import('../src/ui/hud.js');
+  await withFakeDom(() => {
+    for (let n = 0; n <= 5; n++) {
+      const el = HUD.prototype.postStrip.call({}, n);
+      const kids = el.children;
+      assert.deepEqual(kids.map((k) => k.tagName), ['SPAN', 'I', 'SPAN', 'I', 'SPAN', 'I', 'SPAN', 'I', 'SPAN', 'I', 'SPAN'], `n=${n}`);
+      for (const sp of kids.filter((k) => k.tagName === 'SPAN')) assert.equal(sp.children.length, 0, 'no separator inside a nowrap label');
+      for (const sep of kids.filter((k) => k.tagName === 'I')) assert.equal(sep.textContent, ' · ', 'the dot stays with the label before it');
+      assert.ok(el.textContent.startsWith('5m') && el.textContent.endsWith('then every 8h' + (n >= 5 ? ' ●' : '')), el.textContent);
+    }
+  });
+});
+
+test('parcel modal keys: Esc while it shakes (already paid) waits for the reveal; Esc then closes it; Enter never also presses a focused HUD button', async () => {
+  const g = fresh();
+  g.s.post.nextAt = g.now() - 1;
+  assert.ok(g.postStatus().ready);
+  await withFakeDom(async () => {
+    const hud = await fakeHud(g, { ctrl: { world: { prefersReducedMotion: false }, claimPost: () => g.claimPost(), postClosed() {} } });
+    delete hud.closeSeedPopover; hud.closeSeedPopover = () => {};
+    const back = hud.showPost();
+    assert.ok(back && hud.topModal() === back);
+    back.querySelector('[data-guide="modal:post:open"]').click(); // Open! ✨: paid now, the reveal in 0.6 s
+    assert.equal(g.s.post.n, 1);
+    hud.closeTopModal('escape');
+    assert.ok(!back._closed, 'Esc during the shake does not skip the reveal');
+    await new Promise((r) => setTimeout(r, 650));
+    assert.ok(back.querySelector('.post-tiles').children.length > 0, 'the tiles are shown');
+    hud.closeTopModal('escape');
+    assert.ok(back._closed, 'Esc closes it once the tiles are up');
+  });
+  // a modal without its own Esc still closes on Esc
+  const { HUD } = await import('../src/ui/hud.js');
+  const calls = [];
+  const m = { _close: () => calls.push('close'), _enter: () => calls.push('enter') };
+  HUD.prototype.closeTopModal.call({ topModal: () => m }, 'escape');
+  HUD.prototype.closeTopModal.call({ topModal: () => m }, 'enter');
+  assert.deepEqual(calls, ['close', 'enter']);
+  const main = read('../src/main.js');
+  assert.ok(/if \(modal\) \{ if \(k === 'escape' \|\| k === 'enter'\) \{ e\.preventDefault\(\);/.test(main), 'onKey: the modal takes Enter (preventDefault)');
+  assert.ok(/k === 'escape' && this\.hud\.postPop\) \{ this\.hud\.closePostPop\(\)/.test(main), 'Esc closes the post popover');
+});
+
+test('the Mailbox: a Hand tap opens its decor panel (countdown, 💗, ✥ Move, 📦 Put away) unless a parcel waits', async () => {
+  const g = bareAt(20);
+  const box = putDecor(g, 'mailbox');
+  g.s.post.nextAt = g.now() + 3 * 3600e3;
+  const hud = await fakeHud(g, { showPost() { this.posted = true; } });
+  await withFakeDom(() => {
+    hud.openDecor(box);
+    assert.equal(hud.opened.live, true, 'its countdown ticks');
+    let el = hud.opened.render();
+    assert.ok(el.textContent.includes('📪 Next parcel in'), el.textContent);
+    const buttons = el.querySelectorAll('button');
+    assert.ok(buttons.some((b) => b.textContent === '✥ Move'));
+    const away = buttons.find((b) => b.textContent === '📦 Put away');
+    assert.ok(away && !away.classList.contains('red'), 'a one-of-a-kind prize is put away, never sold');
+    g.s.post.nextAt = g.now() - 1;
+    el = hud.opened.render();
+    assert.ok(el.textContent.includes('A parcel is waiting'));
+    el.querySelectorAll('button').find((b) => b.textContent === 'Open').click();
+    assert.ok(hud.posted && hud.closed);
+  });
+  const main = read('../src/main.js');
+  assert.ok(/if \(o\.type === 'mailbox'\) \{ this\.tapMailbox\(o\); return; \}/.test(main));
+  assert.ok(/tapMailbox\(o\) \{[\s\S]*?if \(st\.ready\) this\.hud\.showPost\(\);\s*else this\.hud\.openDecor\(o\);/.test(main), 'no more toast-only tap');
+});
+
+test('🏆 after a keepsake flies in: the Album tab (NEW find), dots on tabs with something new or to claim, a mark on the page dot', async () => {
+  const { SimUI } = await import('./simui.mjs');
+  const g = albumAt(9);
+  g.s.album.open = true;
+  g.s.album.have['meadow:clover'] = 1;
+  g.s.album.have['barn:feather'] = 2; // the latest find: the album opens on its page
+  g.s.album.fresh = ['meadow:clover', 'barn:feather'];
+  g.achievementsReady = () => 4;
+  const hud = await fakeHud(g);
+  const sim = Object.create(SimUI.prototype); sim.g = g;
+  assert.equal(hud.treasuresTab(), 'album');
+  assert.equal(sim.treasuresTab(), 'album', 'SimUI agrees');
+  assert.deepEqual(hud.treasureDots(), { album: true, ribbons: false, awards: true });
+  await withFakeDom(() => {
+    // the tab bar dots, set in place on every refresh
+    const tabBar = new FakeEl();
+    for (const id of ['album', 'awards']) { const b = new FakeEl('button'); b.setAttribute('data-guide', `treasures:tab:${id}`); tabBar.append(b); }
+    hud.panel = { id: 'treasures', tabBar, tab: 'awards', renderedTab: 'awards', body: new FakeEl(), render: () => new FakeEl() };
+    Object.getPrototypeOf(hud).refreshPanel.call(hud); // (the real one: fakeHud stubs it)
+    assert.deepEqual(tabBar.children.map((b) => b.classList.contains('has-new')), [true, true]);
+    // the page dots: a NEW find on another page is marked
+    hud.panel = null;
+    hud.albumPageId = null;
+    const el = hud.renderAlbum();
+    const dots = el.querySelectorAll('.album-dot');
+    const ids = CFG.ALBUM.pages.map((p) => p.id);
+    assert.ok(dots[ids.indexOf('barn')].classList.contains('current') && !dots[ids.indexOf('barn')].classList.contains('fresh'));
+    assert.ok(dots[ids.indexOf('meadow')].classList.contains('fresh'), 'meadow:clover waits on another page');
+  });
+  // nothing new: awards to claim come first again
+  g.s.album.fresh = [];
+  assert.equal(hud.treasuresTab(), 'awards');
+  assert.equal(sim.treasuresTab(), 'awards');
+});
+
+test('💗 Ribbons: the rule stays in the sticky card, with a way to Decor when nothing waits to be claimed', async () => {
+  const g = bareAt(31);
+  for (const type of ['gazebo', 'fountain', 'statue']) putDecor(g, type);
+  const hud = await fakeHud(g);
+  await withFakeDom(() => {
+    assert.ok(g.charmStatus().ready > 0);
+    let head = hud.renderRibbons().firstChild;
+    assert.ok(head.classList.contains('rb-head'));
+    assert.ok(head.textContent.includes(`Decorations add 💗: ${CFG.CHARM.perKind} of each kind count, gilded ones ×3.`), head.textContent);
+    assert.ok(head.querySelector('.claim-all') && !head.querySelectorAll('button').some((b) => b.textContent.includes('Decor')), 'Claim all, no Decor button');
+    g.claimRibbons();
+    head = hud.renderRibbons().firstChild;
+    const decor = head.querySelectorAll('button').find((b) => b.textContent === '🌳 Decor ›');
+    assert.ok(decor && !head.querySelector('.claim-all'));
+    decor.click();
+    assert.equal(hud.shopTab, 'decor');
+  });
+});
+
+test('a gift waiting in Shop → Decor puts 🎁 on the Shop button', async () => {
+  const g = fresh();
+  const badges = new Map();
+  const hud = await fakeHud(g, { setBadge: (btn, n, text) => badges.set(btn, [n, text]), shopBtn: 'shop', ordersBtn: 'orders', trophyBtn: 'trophy', dailyBtn: 'daily', barnBtnEl: 'barn' });
+  hud.refreshBadges();
+  assert.deepEqual(badges.get('shop'), [0, '🎁']);
+  g.s.gifts.push('mailbox', { type: 'fountain', gilded: true });
+  hud.refreshBadges();
+  assert.deepEqual(badges.get('shop'), [2, '🎁']);
+  assert.ok(/g\.on\('gifts', \(\) => this\.refreshBadges\(\)\)/.test(read('../src/ui/hud.js')), 'the badge follows the gifts event');
+});
+
+test('gold reads as gold (no metalness without an environment map); gilding leaves the water of a fountain or bird bath blue', async () => {
+  const V = await import('../src/game/views.js');
+  await import('../src/game/models/index.js');
+  const A = await import('../src/game/assets.js');
+  assert.ok(CFG.GOLD.metalness <= 0.1 && CFG.GOLD.lift >= 0.6, 'GOLD is bright, not dull olive');
+  const matsOf = (obj) => { const out = []; obj.traverse((m) => { if (m.isMesh) out.push(m.material); }); return out; };
+  for (const type of ['fountain', 'birdbath']) {
+    const plain = matsOf(A.makeObject(type));
+    assert.ok(plain.includes(A.MATS.vcWater) && A.MATS.vcWater.vertexColors, `${type}: its water is in the vcWater bucket`);
+    const gilded = matsOf(V.applyTint(A.makeObject(type), V.tintFor({ type, gilded: true })));
+    assert.ok(gilded.includes(A.MATS.vcWater), `${type}: gilded, its water stays water`);
+    assert.ok(gilded.some((m) => m !== A.MATS.vcWater && '#' + m.color.getHexString() === CFG.GOLD.color && m.metalness === CFG.GOLD.metalness), `${type}: the rest is gold`);
+  }
+  // an album recolour tints the water with the rest (the Mossy Fountain's green water, as before)
+  assert.ok(!matsOf(V.applyTint(A.makeObject('fountain'), V.tintFor({ type: 'mossfountain' }))).includes(A.MATS.vcWater));
+});
+
+test('pale album recolours keep their colour: tintLift reaches the shader; sky, frost and blossom are not grey', async () => {
+  const THREE = await import('three');
+  const V = await import('../src/game/views.js');
+  await import('../src/game/models/index.js');
+  const A = await import('../src/game/assets.js');
+  // the shader's own math (desaturate in views.js) over the model's vertex colours: the median sRGB saturation
+  const sat = (type) => {
+    const t = V.tintOf(type), tint = new THREE.Color(t.color), lift = t.lift ?? 0.35 * t.desat, out = [];
+    A.makeObject(CFG.OBJECTS[type].model).traverse((m) => {
+      const c = m.isMesh && m.material !== A.MATS.glow && m.material !== A.MATS.glass && m.geometry.attributes.color;
+      if (!c) return;
+      for (let i = 0; i < c.count; i += 3) {
+        const [r, gg, b] = [c.getX(i), c.getY(i), c.getZ(i)];
+        const L = 0.299 * r + 0.587 * gg + 0.114 * b, tl = L + (1 - L) * lift, k = t.desat;
+        const s = new THREE.Color(r + (tl - r) * k, gg + (tl - gg) * k, b + (tl - b) * k).multiply(tint).convertLinearToSRGB();
+        const mx = Math.max(s.r, s.g, s.b);
+        out.push(mx ? (mx - Math.min(s.r, s.g, s.b)) / mx : 0);
+      }
+    });
+    return out.sort((a, b) => a - b)[out.length >> 1];
+  };
+  for (const [type, min] of [['skyballoon', 0.35], ['blossomoak', 0.25], ['frostpine', 0.18]]) {
+    assert.equal(V.tintOf(type).lift, CFG.OBJECTS[type].tintLift, `${type}: tintLift is passed on`);
+    assert.ok(sat(type) >= min, `${type} saturation ${sat(type).toFixed(3)} ≥ ${min}`);
+  }
+  const obj = V.applyTint(A.makeObject('balloon'), V.tintOf('skyballoon'));
+  assert.ok(matsOrFirst(obj).userData.lift === 0.6, 'the material carries the lift (a ghost clone keeps it)');
+});
+const matsOrFirst = (obj) => { let mat = null; obj.traverse((m) => { if (!mat && m.isMesh && m.material.userData.desat) mat = m.material; }); return mat; };
+
+test('Bubbles.update reads the viewport once per pass (never between two bubbles\' writes) and places them where World.project does', async () => {
+  const THREE = await import('three');
+  const { World } = await import('../src/game/world.js');
+  const { Bubbles } = await import('../src/ui/bubbles.js');
+  const had = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  let reads = 0;
+  globalThis.window = { get innerWidth() { reads++; return 390; }, get innerHeight() { reads++; return 844; } };
+  try {
+    const cam = new THREE.PerspectiveCamera(50, 390 / 844, 0.5, 300);
+    cam.position.set(12, 14, 12); cam.lookAt(0, 0, 0); cam.updateMatrixWorld(); cam.updateProjectionMatrix();
+    const world = Object.create(World.prototype); world.camera = cam;
+    const b = new Bubbles({ appendChild() {} }, world);
+    for (let i = 0; i < 30; i++) {
+      const el = { style: { display: '', transform: '' }, classList: { toggle() {} } };
+      b.map.set('o' + i, { el, inner: { offsetWidth: 40, offsetHeight: 30 }, w: 40, h: 38, getPos: (v) => v.set(i - 15, 0.5, (i % 5) - 2) });
+    }
+    b.update();
+    assert.equal(reads, 2, 'innerWidth and innerHeight, once each');
+    for (const [id, bb] of b.map) {
+      const s = world.project(bb.getPos(new THREE.Vector3()), new THREE.Vector3(), 390, 844);
+      assert.equal(bb.el.style.transform, `translate(${s.x.toFixed(1)}px, ${s.y.toFixed(1)}px) translate(-50%, -100%)`, id);
+    }
+  } finally { if (had) Object.defineProperty(globalThis, 'window', had); else delete globalThis.window; }
+});
+
+test('HUD CSS: the level star never shrinks (the 🎀 rosette stays off "Next:"); the hint\'s cap allows for its -6px margin', () => {
+  const css = read('../src/style.css');
+  assert.ok(/\.next-hint \{[^}]*margin: 3px 0 0 -6px/.test(css), 'the margin the cap allows for');
+  assert.ok(css.includes('.next-hint { max-width: min(190px, calc(100% + 6px)); }'));
+  assert.ok(css.includes('.level-star { flex-shrink: 0; }'));
+  assert.ok(css.includes('@media (max-width: 340px) { .level-star { flex-shrink: 1; } }'), 'on a 320 px phone the star still gives way to the XP bar');
 });
 
 let pass = 0, fail = 0;

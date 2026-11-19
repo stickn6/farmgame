@@ -13,8 +13,11 @@ export const MATS = {
   // greenhouse panes etc.: pass 'glass' as the bucket argument of box()
   glass: new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.1, metalness: 0.1, transparent: true, opacity: 0.45, depthWrite: false, flatShading: true }),
 };
+// the water of a fountain or bird bath: the same look as 'vc', in its own bucket so gilding can leave it blue
+MATS.vcWater = MATS.vc.clone();
 MATS.glow.userData.bucket = 'glow';
 MATS.glass.userData.bucket = 'glass';
+MATS.vcWater.userData.bucket = 'vcWater';
 
 const colorMats = new Map();
 // Lightweight "material" used only during model construction to carry a color.

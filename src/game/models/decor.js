@@ -38,6 +38,15 @@ const glowCone = (r, h, seg, color, x = 0, y = 0, z = 0) =>
 // flat ring lying on the ground plane, centered at y
 const ring = (R, r, color, y, ts = 16, rs = 4) => rot(torus(R, r, rs, ts, color, 0, y, 0), Math.PI / 2, 0, 0);
 function keep(obj, name) { obj.userData.keep = true; obj.name = name; return obj; }
+// water, streams, foam and droplets bake into the 'vcWater' bucket (MATS.vcWater): gilding leaves them water
+function wet(obj) {
+  obj.traverse((m) => {
+    if (!m.isMesh) return;
+    m.material = m.material.clone();
+    m.material.userData.bucket = 'vcWater';
+  });
+  return obj;
+}
 const at = (obj, x, y, z, ry = 0) => { obj.position.set(x, y, z); obj.rotation.y = ry; return obj; };
 
 // little flower clump: leaves + a few blossoms (bottom at y=0)
@@ -76,11 +85,11 @@ function birdbath() {
     cyl(0.13, 0.13, 0.04, 8, K.stoneL, 0, 0.27, 0),
     cyl(0.12, 0.09, 0.06, 8, K.stoneL, 0, 0.44, 0),
     cyl(0.37, 0.14, 0.13, 10, C.stone, 0, 0.49, 0),
-    cyl(0.33, 0.33, 0.03, 10, K.water, 0, 0.6, 0),
+    wet(cyl(0.33, 0.33, 0.03, 10, K.water, 0, 0.6, 0)),
     rot(torus(0.355, 0.04, 4, 10, K.stoneL, 0, 0.625, 0), Math.PI / 2, 0, 0),
     // ripples + splash around the bathing finch
-    ring(0.12, 0.008, K.foam, 0.632, 10, 3),
-    ball(0.018, K.waterL, -0.14, 0.7, -0.02), ball(0.014, K.foam, -0.02, 0.72, -0.15), ball(0.016, K.waterL, -0.16, 0.74, -0.14),
+    wet(ring(0.12, 0.008, K.foam, 0.632, 10, 3)),
+    wet(group(ball(0.018, K.waterL, -0.14, 0.7, -0.02), ball(0.014, K.foam, -0.02, 0.72, -0.15), ball(0.016, K.waterL, -0.16, 0.74, -0.14))),
   ];
   // bluebird perched on the rim, facing out toward the viewer
   const a = 0.75;
@@ -233,7 +242,7 @@ function fountain() {
   P.push(
     rot(cyl(0.98, 1.0, 0.07, 8, C.stoneDark, 0, 0, 0), 0, Math.PI / 8, 0),
     cyl(0.88, 0.9, 0.28, 12, C.stone, 0, 0.07, 0),
-    cyl(0.8, 0.8, 0.03, 12, K.water, 0, 0.33, 0),
+    wet(cyl(0.8, 0.8, 0.03, 12, K.water, 0, 0.33, 0)),
   );
   // chunky stone rim blocks
   for (let i = 0; i < 12; i++) {
@@ -246,23 +255,23 @@ function fountain() {
     cyl(0.12, 0.16, 0.56, 8, K.stoneL, 0, 0.42, 0),
     cyl(0.16, 0.16, 0.05, 8, C.stone, 0, 0.7, 0),
     cyl(0.48, 0.15, 0.19, 12, C.stone, 0, 0.96, 0),
-    cyl(0.43, 0.43, 0.02, 12, K.water, 0, 1.135, 0),
+    wet(cyl(0.43, 0.43, 0.02, 12, K.water, 0, 1.135, 0)),
     rot(torus(0.455, 0.04, 4, 12, K.stoneL, 0, 1.15, 0), Math.PI / 2, 0, 0),
     // top tier: little pedestal, cup and spout
     cyl(0.055, 0.08, 0.22, 6, K.stoneL, 0, 1.15, 0),
     cyl(0.17, 0.06, 0.08, 8, C.stone, 0, 1.36, 0),
-    cyl(0.14, 0.14, 0.015, 8, K.water, 0, 1.43, 0),
-    cone(0.045, 0.2, 6, K.waterL, 0, 1.43, 0),
+    wet(cyl(0.14, 0.14, 0.015, 8, K.water, 0, 1.43, 0)),
+    wet(cone(0.045, 0.2, 6, K.waterL, 0, 1.43, 0)),
   );
   // streams arcing out over the upper bowl's lip and falling into the basin, with foam where they land
   for (let i = 0; i < 6; i++) {
     const a = (i / 6) * TAU + 0.2;
     const x = Math.sin(a) * 0.47, z = Math.cos(a) * 0.47;
     P.push(
-      beam([x * 1.06, 1.16, z * 1.06], [x * 1.22, 0.95, z * 1.22], 0.05, K.waterL),
-      beam([x * 1.22, 0.95, z * 1.22], [x * 1.32, 0.37, z * 1.32], 0.05, K.waterL),
+      wet(beam([x * 1.06, 1.16, z * 1.06], [x * 1.22, 0.95, z * 1.22], 0.05, K.waterL)),
+      wet(beam([x * 1.22, 0.95, z * 1.22], [x * 1.32, 0.37, z * 1.32], 0.05, K.waterL)),
     );
-    P.push(ring(0.06, 0.014, K.foam, 0.368, 8, 3));
+    P.push(wet(ring(0.06, 0.014, K.foam, 0.368, 8, 3)));
     P[P.length - 1].position.set(x * 1.32, 0.368, z * 1.32);
   }
   // lily pads, a lotus and wishing coins
@@ -293,7 +302,7 @@ function fountain() {
     const a = (i / 6) * TAU + 0.15;
     drops.push(rot(box(0.1, 0.006, 0.018, K.foam, Math.sin(a) * 0.68, 0.36, Math.cos(a) * 0.68), 0, a, 0));
   }
-  P.push(keep(group(drops), 'spinY'));
+  P.push(keep(wet(group(drops)), 'spinY'));
   return group(P);
 }
 

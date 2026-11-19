@@ -7,6 +7,7 @@ export class Bubbles {
     this.world = world;
     this.map = new Map(); // id -> { el, getPos, html, cls }
     this.tmp = new THREE.Vector3();
+    this.ndc = new THREE.Vector3();
     // the HUD's boxes (set by main.js): a bubble that slides under the top bar or the toolbar fades, so the white
     // bubble never sits behind the HUD's white text (read 4× a second, before any bubble moves)
     this.hudRects = null;
@@ -42,14 +43,16 @@ export class Bubbles {
   }
 
   update() {
-    // layout reads first (the HUD's boxes, new bubbles' sizes), then the writes
+    // layout reads first (the HUD's boxes, new bubbles' sizes, the viewport), then the writes: no read between two
+    // bubbles' writes, or each one costs a style recalc while the camera moves
     const now = performance.now();
     if (this.hudRects && now - this.rectsAt > 250) { this.rects = this.hudRects(); this.rectsAt = now; }
     for (const b of this.map.values()) if (!b.w && b.el.style.display !== 'none') { b.w = b.inner.offsetWidth; b.h = b.inner.offsetHeight + 8; }
+    const W = window.innerWidth, H = window.innerHeight;
     for (const b of this.map.values()) {
       const p = b.getPos(this.tmp);
       if (!p) { b.el.style.display = 'none'; continue; }
-      const s = this.world.project(p);
+      const s = this.world.project(p, this.ndc, W, H);
       if (!s.visible) { b.el.style.display = 'none'; continue; }
       b.el.style.display = '';
       b.el.style.transform = `translate(${s.x.toFixed(1)}px, ${s.y.toFixed(1)}px) translate(-50%, -100%)`;

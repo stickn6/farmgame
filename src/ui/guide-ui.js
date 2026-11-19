@@ -33,15 +33,21 @@ const PRIORITY = { chest: 2, gift: 3, postGift: 3, daily: 4 }; // anything else 
 // a queue kind's family: 'chest:album:barn' is a chest, 'gift:copperwell' a gift (one entry per kind, so prizes don't drop)
 const family = (kind) => kind.split(':')[0];
 const POST_AWAY_AFTER = 20; // s after start: "A parcel came while you were away" (once per session)
+const POST_AWAY_BACK = 3; // s after coming back to a hidden tab (or a phone app) whose parcel turned ready meanwhile
 const IDLE_EVENTS = ['soil', 'animalChanged', 'animalAdded', 'factoryChanged', 'objectAdded', 'orderDone', 'visitorServed', 'quest',
   'daily', 'chores', 'land', 'storageUpgraded', 'debrisCleared', 'post'];
 const PLAN_EVENTS = [...IDLE_EVENTS, 'coins', 'inventory', 'levelup', 'orders', 'visitors', 'treeChanged', 'objectRemoved', 'objectMoved',
   'questComplete', 'tutorial', 'gifts', 'chapter', 'wagon', 'postReady', 'keepsake', 'album', 'charm', 'ribbons', 'gild'];
 
 const nowS = () => performance.now() / 1000;
+// s.gifts holds types, or { type, gilded } for a gilded prize that was put away
+const giftType = (gf) => (typeof gf === 'string' ? gf : gf?.type);
+const hasGift = (g, type) => (g.s.gifts || []).some((gf) => giftType(gf) === type);
 const shown = (el) => !!el && el.isConnected && !el.closest('.hud-hidden, .hidden');
 const pad = (r, p) => ({ x: r.x - p, y: r.y - p, w: r.w + 2 * p, h: r.h + 2 * p });
 const inRect = (x, y, r) => !!r && x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
+// px from a point to a rect (0 inside it)
+const rectGap = (p, r) => Math.hypot(Math.max(r.x - p.x, 0, p.x - r.x - r.w), Math.max(r.y - p.y, 0, p.y - r.y - r.h));
 const inSafe = (p, s) => p.x >= s.left && p.x <= s.right && p.y >= s.top && p.y <= s.bottom;
 const overlap = (a, b) => Math.max(0, Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x)) * Math.max(0, Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y));
 const shortTime = (sec) => (sec < 60 ? `${Math.ceil(sec)}s` : fmtClock(sec));
@@ -199,8 +205,10 @@ export class GuideLayer {
 
   // The tile nearest the screen centre that a fingertip can hit cleanly: no speech bubble within TOUCH_CLEAR px
   // (a phone's touch adjustment pulls a tap that close onto the bubble, e.g. the Bakery's next to the field) and
-  // the canvas under the whole fingertip. Else the nearest one whose centre is clear (clear: true), else the
-  // nearest (clear: false). Hit tests are costly: the choice is re-checked every LOOKUP s and re-projected between.
+  // the canvas under the whole fingertip. Else the nearest one whose centre is clear and at least TOUCH_SLOP px
+  // from every bubble (clear: true). Else the nearest (clear: false: no finger; the edge arrow turns the view a
+  // quarter to see the patch from another side). Hit tests are costly: the choice is re-checked every LOOKUP s
+  // and re-projected between.
   pickTile(tiles, screen) {
     const t = nowS();
     const sig = tiles.map((p) => p[0] + ',' + p[1]).join(' ');
@@ -209,17 +217,26 @@ export class GuideLayer {
     if (kept) return { p: kept, clear: c.clear };
     const cx = innerWidth / 2, cy = innerHeight / 2;
     const near = screen.sort((a, b) => (a.x - cx) ** 2 + (a.y - cy) ** 2 - ((b.x - cx) ** 2 + (b.y - cy) ** 2));
-    const bubbles = [];
+    const raw = [];
     for (const el of document.querySelectorAll('.bubble-anchor')) {
       const r = el.getBoundingClientRect();
-      if (r.width > 0) bubbles.push(pad({ x: r.left, y: r.top, w: r.width, h: r.height }, TOUCH_CLEAR));
+      if (r.width > 0) raw.push({ x: r.left, y: r.top, w: r.width, h: r.height });
     }
-    const centre = new Map();
+    const bubbles = raw.map((r) => pad(r, TOUCH_CLEAR));
+    const centre = new Map(), tip = new Map();
     const hits = (p) => { if (!centre.has(p)) centre.set(p, this.tappable(p) && !this.occluded(p)); return centre.get(p); };
-    const roomy = (p) => !bubbles.some((r) => inRect(p.x, p.y, r)) && hits(p)
-      && [[TOUCH_SLOP, 0], [-TOUCH_SLOP, 0], [0, TOUCH_SLOP], [0, -TOUCH_SLOP]].every(([dx, dy]) => this.tappable({ x: p.x + dx, y: p.y + dy }));
+    const fingertip = (p) => {
+      if (!tip.has(p)) tip.set(p, hits(p) && [[TOUCH_SLOP, 0], [-TOUCH_SLOP, 0], [0, TOUCH_SLOP], [0, -TOUCH_SLOP]].every(([dx, dy]) => this.tappable({ x: p.x + dx, y: p.y + dy })));
+      return tip.get(p);
+    };
+    const roomy = (p) => !bubbles.some((r) => inRect(p.x, p.y, r)) && fingertip(p);
     let p = near.find(roomy), clear = true;
-    if (!p) p = near.find(hits);
+    if (!p) {
+      // a tap reaches the centre and no bubble is within TOUCH_SLOP px of it (closer, the touch adjustment takes the
+      // tap to the bubble: the Bakery's panel opens and nothing is harvested); the whole fingertip on canvas if any is
+      const ok = near.filter((q) => hits(q) && raw.every((r) => rectGap(q, r) >= TOUCH_SLOP));
+      p = ok.find(fingertip) || ok[0];
+    }
     if (!p) { p = near[0]; clear = false; }
     this.tileChoice = { sig, t, tile: p.tile, clear };
     return { p, clear };
@@ -260,7 +277,7 @@ export class GuideLayer {
     // a HUD modal (level-up, chest, daily) keeps Mabel's card, but her side chips wait behind it; so do her toasts
     // and coach chips while a panel or the seed popover is up (they'd sit on its title, ✕ or seed cards)
     this.root.classList.toggle('g-hud-modal', !!this.hud.topModal());
-    this.root.classList.toggle('g-hud-panel', !!(this.hud.panel || this.hud.seedPopoverOpen()));
+    this.hudCovers();
     // spotlight + 4 blockers around the hole
     const hole = v.hard && res ? this.clampRect(pad(res.rect, HOLE_PAD)) : null;
     this.spot.classList.toggle('hidden', !hole);
@@ -498,6 +515,26 @@ export class GuideLayer {
     }
   }
 
+  // toasts and coach lines hide (and take no taps) while a panel, the seed popover, the 🧭 view pad or the post
+  // popover is up: the last two open right where those cards sit, under row 3 of the top bar
+  hudCovers() {
+    const hud = this.hud;
+    this.root.classList.toggle('g-hud-panel', !!(hud.panel || hud.seedPopoverOpen() || hud.camPadOpen?.() || hud.postPop));
+  }
+
+  // the player opened the 🧭 view pad or the post popover: the card that was there has done its job and goes for good
+  // (so it doesn't come back over the countdown or the pad's arrows); a .g-keep line answers a panel and stays
+  yieldCards() {
+    for (const el of [this.toastEl, this.coachEl]) {
+      if (!el?.isConnected || el._dying || el.classList.contains('g-keep')) continue;
+      el._dying = true;
+      el.style.pointerEvents = 'none';
+      el.classList.add('g-out');
+      setTimeout(() => el.remove(), 300);
+    }
+    this.hudCovers();
+  }
+
   // a short-lived element that fades out (tap dismisses it too)
   transient(el, ms) {
     this.root.append(el);
@@ -617,7 +654,7 @@ export class GuideController {
       isGoal: (key) => this.steps().some((s) => s?.target?.ui === key),
       visitorLine: (v) => (v.first ? VISITORS.firstLine : null),
       onSettings: () => this.requestTick(),
-      onUiChange: () => this.requestTick(),
+      onUiChange: (reason) => this.uiChange(reason),
       // "Sell extras" never sells below what the planner keeps back for the goal, an order or the animals
       sellFloors: () => reserves(g),
     });
@@ -631,8 +668,11 @@ export class GuideController {
       if (!g.hasSeen('firstDrop') && g.tutorialMode() !== 'independent' && !this.dropInterrupt) this.dropInterrupt = { key: 'firstDrop', item };
     });
     g.on('safetyNet', () => this.speak('safetyNet', TUTORIAL.lines.safetyNet, { once: false }));
-    // a parcel that turns up while the game is in the background counts as "came while you were away"
+    // a parcel that turns up while the game is in the background counts as "came while you were away". A desktop tab
+    // still ticks while hidden (postReady fires then); a phone's page is frozen, so its parcel turns ready only after
+    // the player is back: the state at hide time tells the two apart (a parcel already waiting then was seen)
     g.on('postReady', () => { if (document.hidden) this.postAwayDue = true; });
+    document.addEventListener('visibilitychange', () => this.visibility(document.hidden));
     // (and that line goes away once the parcel is opened)
     g.on('post', () => {
       const el = this.postAwayEl;
@@ -642,6 +682,14 @@ export class GuideController {
     document.addEventListener('pointerdown', (e) => this.onPointer(e), true);
     document.addEventListener('pointerup', (e) => this.pointerUp(e), true);
     document.addEventListener('pointercancel', (e) => this.pointerUp(e), true);
+  }
+
+  // the HUD changed (a panel, modal, tab, tool, popover or the 🧭 pad): plan again. The pad and the post popover open
+  // right where her toast and coach cards sit: those cards give way for good (see GuideLayer.yieldCards).
+  uiChange(reason) {
+    const hud = this.hud;
+    if ((reason === 'campad' || reason === 'popover') && (hud.camPadOpen?.() || hud.postPop)) this.layer.yieldCards();
+    this.requestTick();
   }
 
   // ------------------------------------------------------------ start (§6.7)
@@ -663,6 +711,10 @@ export class GuideController {
       const res = this.view.act ? this.layer.resolve(this.view.act.target, this.view.act) : null;
       if (res?.world) this.frameTo(res.world, { minDist: 13, instant: true });
     }
+    // a gift that never went up (the app closed during a parcel's reveal or with its ghost up, or a chest prize's
+    // placement was still queued): one line about where it waits. The Shop button wears a 🎁 badge meanwhile, and
+    // the Shop opens on Decor (preferredTab). The tour's own gift has its graduation step instead.
+    this.giftWaitsAtStart();
     // an old farm's first load: one line about the new goal card
     const t = g.s.tutorial;
     if (!guided && t && !t.startedAt && !g.hasSeen('line:migratedTip') && g.s.settings?.hints !== 'off') {
@@ -672,6 +724,21 @@ export class GuideController {
         this.wiggleQuest();
       });
     }
+  }
+
+  // (once per kind of gift: a prize put away on purpose waits there too, and needn't be mentioned every visit)
+  giftWaitsAtStart() {
+    const g = this.game;
+    const type = giftType((g.s.gifts || [])[0]);
+    if (!OBJECTS[type] || g.hasSeen('line:giftWaits:' + type)) return;
+    if (g.tutorialMode() === 'guided' || graduationPending(g) || g.s.settings?.hints === 'off') return;
+    const text = TUTORIAL.lines.giftWaits.replace('{gift}', OBJECTS[type].name);
+    // (not while the planner itself points the way there, e.g. a chapter goal to place it)
+    const waits = () => hasGift(g, type) && g.s.settings?.hints !== 'off' && !this.steps().some((s) => s?.gift);
+    this.enqueue('giftWaits', () => {
+      if (!g.markSeen('line:giftWaits:' + type)) return;
+      this.layer.toastCard(text, { ms: 7000, onTap: () => this.hud.openShop('decor') });
+    }, waits);
   }
 
   // 1.6 s glide from high over the farm down to the starter field (§6.9)
@@ -832,7 +899,8 @@ export class GuideController {
 
   preferredTab(panelId) {
     for (const s of this.steps()) if (s?.panel?.id === panelId && s.panel.tab) return s.panel.tab;
-    if (panelId === 'shop' && this.game.s.gifts?.length && this.steps().some((s) => s?.gift && s.why !== 'modal')) return 'decor';
+    // a gift waiting to go up (🎁 on the Shop button): the Shop opens where it is, unless a step wants another tab
+    if (panelId === 'shop' && this.game.s.gifts?.length) return 'decor';
     return null;
   }
 
@@ -1286,12 +1354,14 @@ export class GuideController {
     this.tipCtx.coarse = !!globalThis.matchMedia?.('(pointer: coarse)').matches;
     const tip = pendingTip(g, this.tipCtx);
     if (!tip) return;
+    // (still the tip due when the screen is free: "collect your ribbons" waits out a Treasures panel where they get
+    // collected, and hints may have been turned off meanwhile; a dropped tip isn't marked seen, so it can come back)
     this.enqueue('tip', () => {
       if (!markTipSeen(g, tip)) return;
       this.lastTipAt = nowS();
       const onTap = tip.onTap ? () => { try { tip.onTap(this); } catch (e) { console.error('tip tap:', e); } } : null;
       this.layer.toastCard(tip.text, { ms: 7000, onTap });
-    });
+    }, () => g.tutorialMode() !== 'guided' && g.s.settings?.hints !== 'off' && pendingTip(g, this.tipCtx)?.key === tip.key);
   }
 
   // Parcel #1 that the tour never showed (post1LineDue): Mabel's tour line comes once, as a card, after the tour
@@ -1310,13 +1380,28 @@ export class GuideController {
   // up in the background) and is still unopened 20 s in. Never in the tour, with hints off or in a What's-new session.
   postAway() {
     if (!this.postAwayDue || this.postAwayDone) return;
+    // (never into a hidden tab: its 7 s card would come and go unseen and spend the session's line)
+    if (document.hidden) return;
     const g = this.game;
     if (g.tutorialMode() === 'guided' || g.s.settings?.hints === 'off' || this.whatsNewSession) { this.postAwayDue = false; return; }
-    if (nowS() - this.startedAt < POST_AWAY_AFTER) return;
+    // 20 s after a cold load; a few seconds after coming back to the tab or app
+    const t0 = this.postAwayBackAt != null ? this.postAwayBackAt - (POST_AWAY_AFTER - POST_AWAY_BACK) : this.startedAt;
+    if (nowS() - t0 < POST_AWAY_AFTER) return;
     if (!g.postStatus().ready) { this.postAwayDue = false; return; }
     this.postAwayDone = true;
     this.enqueue('postAway', () => { this.postAwayEl = this.layer.toastCard(TUTORIAL.lines.postAway, { ms: 7000, onTap: () => this.hud.showPost() }); },
       () => g.postStatus().ready && g.s.settings?.hints !== 'off');
+  }
+
+  // the page went to the background (hidden) or came back: see the postReady handler in the constructor
+  visibility(hidden) {
+    if (!this.started) return;
+    const g = this.game;
+    if (hidden) { this.postReadyAtHide = g.postStatus().ready; return; }
+    if (this.postAwayDone || this.postReadyAtHide || !g.postStatus().ready) return;
+    this.postAwayDue = true;
+    this.postAwayBackAt = nowS();
+    this.requestTick();
   }
 
   // A claimed album page (§3.7): its chest ("Page complete!", the gems, the decoration, the launch album's extras),
@@ -1400,7 +1485,7 @@ export class GuideController {
       if (nowS() < next.at) return;
       const modal = family(next.kind) === 'chest' || next.kind === 'daily';
       // toast-cards and chains wait for a free screen and for Mabel to finish what she is showing
-      if (!modal && (hud.panel || hud.seedPopoverOpen() || this.session || this.layer.toastEl?.isConnected)) return;
+      if (!modal && (hud.panel || hud.seedPopoverOpen() || hud.postPop || this.session || this.layer.toastEl?.isConnected)) return;
       this.queue.shift();
       if (!next.valid()) continue;
       if (hud.panel) hud.closePanel();
@@ -1490,7 +1575,7 @@ export class GuideController {
     const g = this.game;
     if (p?.gift && p.type === CHAPTERS[0].reward.gift && graduationPending(g)) g.markSeen('grad:gift'); // the gift waits in Shop → Decor
     // and Mabel says so, once the screen is free (in the tour that's after the daily gift)
-    const waits = () => (g.s.gifts || []).includes(p.type);
+    const waits = () => hasGift(g, p.type);
     if (p?.gift && waits() && g.s.settings?.hints !== 'off') {
       const text = TUTORIAL.lines.giftWaits.replace('{gift}', OBJECTS[p.type]?.name || 'gift');
       this.enqueue('giftWaits', () => this.speak('giftWaits', text, { once: false }), waits);

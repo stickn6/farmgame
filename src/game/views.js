@@ -42,8 +42,8 @@ export function modelHeight(key) {
 
 const defOf = (o) => OBJECTS[o.type] || {};
 
-// Recoloured decorations (def.tint: a colour, or 'gold' = GOLD with its metal look): each material is cloned once
-// per colour; the vertex colours multiply with it. Glowing (lamp glass) and glass parts keep their own look.
+// Recoloured decorations (def.tint: a colour, or 'gold' = GOLD): each material is cloned once per colour; the vertex
+// colours multiply with it. Glowing (lamp glass) and glass parts keep their own look, and gold leaves water blue.
 // The one tint path of the game: album exclusives, the golden parcel decor and (o.gilded) gilding all use it.
 // desat (def.tintDesat, GOLD.desat): how far the model's own colours fade to grey first, so a recolour can
 // really change them (a gold rooster turned silver, a rainbow balloon turned sky blue).
@@ -51,7 +51,7 @@ const tintCache = new Map();
 export function tintOf(type) {
   const d = OBJECTS[type];
   const t = d?.tint;
-  return t === 'gold' ? GOLD : t ? { color: t, desat: d.tintDesat || 0, metalness: d.tintMetal, roughness: d.tintRough } : null;
+  return t === 'gold' ? GOLD : t ? { color: t, desat: d.tintDesat || 0, lift: d.tintLift, metalness: d.tintMetal, roughness: d.tintRough } : null;
 }
 // the vertex colours fade toward their own (slightly lifted) brightness by `desat` before the tint multiplies them,
 // so dark leaves or a gold statue take a light recolour (frost, blossom, silver) instead of turning muddy
@@ -77,11 +77,13 @@ export function tintFor(o) {
   return o?.gilded ? GOLD : tintOf(o?.type);
 }
 // compares tints (a re-add is needed when it changes, e.g. on gilding)
-const tintKey = (t) => (t ? `${t.color}|${t.metalness ?? ''}|${t.desat || 0}` : '');
+const tintKey = (t) => (t ? `${t.color}|${t.metalness ?? ''}|${t.desat || 0}|${t.lift ?? ''}` : '');
 export function applyTint(obj, tint) {
   if (!tint) return obj;
   obj.traverse((m) => {
     if (!m.isMesh || !m.material || m.material === MATS.glow || m.material === MATS.glass) return;
+    // gold leaves the water alone (a gilded fountain still has water in it); a recolour tints it with the rest
+    if (tint === GOLD && m.material === MATS.vcWater) return;
     const k = `${m.material.uuid}|${tint.color}|${tint.metalness ?? ''}|${tint.roughness ?? ''}|${tint.desat || 0}|${tint.lift ?? ''}`;
     let mat = tintCache.get(k);
     if (!mat) {

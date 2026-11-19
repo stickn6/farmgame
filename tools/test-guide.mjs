@@ -11,6 +11,12 @@ import {
   post1LineDue,
 } from '../src/game/guide.js';
 import { GuideFollower, SimUI } from './simui.mjs';
+import { register } from 'node:module';
+import { FakeEl, withFakeDom, fakeDocument } from './fakedom.mjs';
+
+// src/ui/guide-ui.js imports its stylesheet: in node the .css import is an empty module
+register('data:text/javascript,' + encodeURIComponent('export async function load(url, ctx, next) { return url.endsWith(".css") ? { format: "module", source: "", shortCircuit: true } : next(url, ctx); }'));
+const guideUi = () => import('../src/ui/guide-ui.js');
 
 const T0 = Date.UTC(2026, 0, 1, 8);
 let t = T0;
@@ -1307,6 +1313,182 @@ test('a farm that is truly broke gets Mabel\'s pocket money, and the guide carri
 });
 
 // ---------------------------------------------------------------- run
+// ---------------------------------------------------------------- v4 review (UI): Mabel's cards, the parcel line, gifts, the finger, tips
+// a GuideController / GuideLayer with no DOM of its own: the real methods on stand-in parts
+const nowAt = async (sec, fn) => { const real = performance.now; performance.now = () => sec * 1000; try { return await fn(); } finally { performance.now = real; } };
+const stubHud = (extra = {}) => ({ panel: null, seedPopoverOpen: () => null, camPadOpen: () => false, postPop: null, topModal: () => null, levelUpPending: () => false,
+  closePanel() {}, openShop(tab) { this.shopTab = tab; }, showPost() {}, ...extra });
+const controller = async (g, extra = {}) => {
+  const { GuideController } = await guideUi();
+  const c = Object.create(GuideController.prototype);
+  return Object.assign(c, { game: g, hud: stubHud(), ctrl: { placing: null, input: { gesture: null } }, layer: { modalOpen: false, toastEl: null, toastCard: (text, o) => { c.card = { text, ...o }; return {}; } },
+    queue: [], session: null, started: true, startedAt: 0, view: {}, step: null, tipCtx: {}, lastTipAt: -1e9, requestTick() {}, postAwayDue: false, postAwayDone: false, whatsNewSession: false }, extra);
+};
+
+test('Mabel\'s cards give way to the 🧭 view pad and the post popover (hidden, no taps; the card goes for good); new cards wait', async () => {
+  const { GuideLayer } = await guideUi();
+  await withFakeDom(async () => {
+    const layer = Object.create(GuideLayer.prototype);
+    layer.root = new FakeEl();
+    layer.hud = stubHud();
+    const covered = () => layer.root.classList.contains('g-hud-panel');
+    layer.hudCovers();
+    assert.ok(!covered());
+    layer.hud.camPadOpen = () => true;
+    layer.hudCovers();
+    assert.ok(covered(), 'the pad hides toasts and coach lines');
+    layer.hud.camPadOpen = () => false; layer.hud.postPop = { el: {} };
+    layer.hudCovers();
+    assert.ok(covered(), 'so does the post popover');
+    // the tip that said "tap 🧭" is gone once the player did; a .g-keep line (about an open panel) stays
+    layer.toastEl = new FakeEl(); layer.toastEl.className = 'g-toast';
+    layer.coachEl = new FakeEl(); layer.coachEl.className = 'g-coach g-keep';
+    layer.yieldCards();
+    assert.ok(layer.toastEl._dying && layer.toastEl.classList.contains('g-out') && layer.toastEl.style.pointerEvents === 'none');
+    assert.ok(!layer.coachEl._dying);
+  });
+  // the controller does that when the pad or the popover opens (not for the seed popover)
+  const c = await controller(coachedAt('carrots', 5));
+  let yields = 0;
+  c.layer.yieldCards = () => yields++;
+  c.uiChange('campad'); // (closed again)
+  c.uiChange('popover'); // the seed popover: no post popover, no pad
+  assert.equal(yields, 0);
+  c.hud.camPadOpen = () => true;
+  c.uiChange('campad');
+  c.hud.camPadOpen = () => false; c.hud.postPop = {};
+  c.uiChange('popover');
+  assert.equal(yields, 2);
+  // a waiting toast-card holds back while the post popover is up
+  let shown = 0;
+  c.enqueue('tip', () => shown++);
+  c.pump();
+  assert.equal(shown, 0);
+  c.hud.postPop = null;
+  c.pump();
+  assert.equal(shown, 1);
+});
+
+test('"A parcel came while you were away": never into a hidden tab; a few seconds after coming back (desktop tab or phone resume)', async () => {
+  await withFakeDom(async () => {
+    const run = async ({ readyBeforeHide = false, tickedWhileHidden = false } = {}) => {
+      const g = coachedAt('carrots', 6);
+      g.s.post.nextAt = g.now() + (readyBeforeHide ? -1 : 120e3);
+      const c = await controller(g, { startedAt: 0 });
+      const queued = () => c.queue.some((q) => q.kind === 'postAway');
+      await nowAt(100, () => { fakeDocument.hidden = true; c.visibility(true); });
+      advance(3600);
+      if (tickedWhileHidden) {
+        // a desktop tab keeps ticking: postReady fires while hidden
+        c.postAwayDue = true;
+        await nowAt(200, () => c.postAway());
+        assert.ok(!queued() && !c.postAwayDone, 'nothing goes into the hidden tab, the line is not spent');
+      }
+      // back (a phone's page was frozen: its parcel turns ready only now)
+      await nowAt(4000, () => { fakeDocument.hidden = false; c.visibility(false); });
+      await nowAt(4001, () => c.postAway());
+      assert.ok(!queued(), 'not at once');
+      await nowAt(4000 + 3.1, () => c.postAway());
+      return { queued: queued(), c };
+    };
+    assert.ok((await run()).queued, 'phone resume');
+    assert.ok((await run({ tickedWhileHidden: true })).queued, 'desktop hidden tab');
+    assert.ok(!(await run({ readyBeforeHide: true })).queued, 'a parcel already waiting when the player left was seen');
+    // a cold load still waits 20 s
+    const g = coachedAt('carrots', 6);
+    g.s.post.nextAt = g.now() - 1;
+    const c = await controller(g, { startedAt: 10, postAwayDue: true });
+    await nowAt(25, () => c.postAway());
+    assert.equal(c.queue.length, 0);
+    await nowAt(30.5, () => c.postAway());
+    assert.equal(c.queue[0]?.kind, 'postAway');
+  });
+});
+
+test('a gift that never went up (reload during a parcel\'s reveal or its ghost): one line about Shop → Decor, which the Shop opens on', async () => {
+  const g = coachedAt('carrots', 6);
+  g.s.gifts.push('mailbox');
+  const c = await controller(g);
+  assert.equal(c.preferredTab('shop'), 'decor');
+  c.step = { panel: { id: 'shop', tab: 'buildings' } };
+  assert.equal(c.preferredTab('shop'), 'buildings', 'a step\'s own tab wins');
+  c.step = null;
+  c.giftWaitsAtStart();
+  assert.equal(c.queue.length, 1);
+  c.pump();
+  assert.ok(c.card.text.includes('Mailbox waits in Shop → Decor'), c.card.text);
+  c.card.onTap();
+  assert.equal(c.hud.shopTab, 'decor');
+  // once per kind of gift; and not in the tour, with hints off, or for a gift that went up meanwhile
+  c.giftWaitsAtStart();
+  assert.equal(c.queue.length, 0);
+  const off = coachedAt('carrots', 6); off.s.gifts.push('mailbox'); off.s.settings.hints = 'off';
+  const c2 = await controller(off); c2.giftWaitsAtStart(); assert.equal(c2.queue.length, 0);
+  const tour = fresh(); tour.s.gifts.push('mailbox');
+  const c3 = await controller(tour); c3.giftWaitsAtStart(); assert.equal(c3.queue.length, 0);
+  const gone = coachedAt('carrots', 6); gone.s.gifts.push('mailbox');
+  const c4 = await controller(gone); c4.giftWaitsAtStart(); gone.s.gifts = []; c4.pump();
+  assert.equal(c4.card, undefined);
+  // a gilded prize that was put away ({ type, gilded }) counts too
+  const gilt = coachedAt('carrots', 6); gilt.s.gifts.push({ type: 'skyballoon', gilded: true });
+  const c5 = await controller(gilt); c5.giftWaitsAtStart(); c5.pump();
+  assert.ok(c5.card.text.includes('Sky Balloon'));
+});
+
+test('the finger never lands right against a speech bubble (a tap there opens the Bakery): a tile ≥ 14 px clear, else the edge arrow', async () => {
+  const { GuideLayer } = await guideUi();
+  await withFakeDom(async () => {
+    const bubble = { x: 181, y: 350, w: 46, h: 46 }; // the Bakery's 🍞, x 181–227, y 350–396
+    const inside = (p, r) => p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h;
+    const layer = Object.create(GuideLayer.prototype);
+    layer.tappable = (p) => !inside(p, bubble);
+    layer.occluded = () => false;
+    const real = fakeDocument.querySelectorAll;
+    fakeDocument.querySelectorAll = (sel) => (sel === '.bubble-anchor' ? [{ getBoundingClientRect: () => ({ left: bubble.x, top: bubble.y, width: bubble.w, height: bubble.h }) }] : []);
+    try {
+      const pick = (pts) => { layer.tileChoice = null; return layer.pickTile(pts.map((p) => [p.tile]), pts.map((p) => ({ ...p }))); };
+      const jammed = { x: 203, y: 348, tile: 'a' }; // 2 px over the bubble: its centre is canvas, its fingertip is not
+      const near = { x: 240, y: 335, tile: 'b' }; // 15 px clear of it, the whole fingertip on canvas
+      const roomy = { x: 120, y: 300, tile: 'c' };
+      let r = pick([jammed, near]);
+      assert.deepEqual([r.p.tile, r.clear], ['b', true]);
+      r = pick([jammed]);
+      assert.deepEqual([r.p.tile, r.clear], ['a', false], 'no finger: the edge arrow turns the view');
+      r = pick([jammed, near, roomy]);
+      assert.deepEqual([r.p.tile, r.clear], ['c', true], 'a roomy tile first');
+    } finally { fakeDocument.querySelectorAll = real; }
+  });
+});
+
+test('a one-time tip is checked again when it finally shows: "collect your ribbons" waits out a 🏆 visit where they were collected', async () => {
+  const g = coachedAt('carrots', 19);
+  for (let l = 1; l <= 19; l++) g.markSeen('tip:' + l);
+  for (const k of ['tip:camera', 'tip:post2']) g.markSeen(k);
+  assert.equal(pendingTip(g).key, 'tip:ribbons');
+  const c = await controller(g);
+  c.tips();
+  assert.equal(c.queue[0]?.kind, 'tip');
+  assert.ok(c.queue[0].valid(), 'still due');
+  c.hud.panel = { id: 'treasures' }; // 🏆 is open: the card waits…
+  c.pump();
+  assert.equal(c.queue.length, 1);
+  g.claimRibbons(); // …and the ribbons get collected there
+  c.hud.panel = null;
+  c.pump();
+  assert.equal(c.card, undefined, 'the stale card is dropped');
+  assert.equal(c.queue.length, 0);
+  assert.ok(!g.hasSeen('tip:ribbons'), 'not marked seen: a later rank can bring it back');
+  // hints turned off meanwhile: dropped too
+  const h = coachedAt('carrots', 19);
+  for (let l = 1; l <= 19; l++) h.markSeen('tip:' + l);
+  for (const k of ['tip:camera', 'tip:post2']) h.markSeen(k);
+  const c2 = await controller(h);
+  c2.tips();
+  h.s.settings.hints = 'off';
+  c2.pump();
+  assert.equal(c2.card, undefined);
+});
+
 let pass = 0, fail = 0;
 for (const { name, fn } of tests) {
   try { await fn(); pass++; console.log('  ✓', name); } catch (e) { fail++; console.log('  ✗', name, '\n     ', e.message.split('\n')[0], (e.stack || '').split('\n').find((l) => l.includes('test-guide.mjs:')) || ''); }

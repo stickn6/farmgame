@@ -295,6 +295,7 @@ export class HUD {
     g.on('charm', () => this.charmMoved());
     g.on('ribbons', () => { this.refreshBadges(); this.refreshLevelStar(); if (this.panel?.id === 'treasures') this.refreshPanel(); });
     g.on('levelup', () => this.refreshBadges());
+    g.on('gifts', () => this.refreshBadges());
   }
 
   // the 🏆 badge follows charm; a newly reached ribbon rank bumps 🏆 once
@@ -452,6 +453,8 @@ export class HUD {
     // 🏆 = awards to claim + album pages to claim (+ ribbon ranks, with Prettiest Farm)
     const ribbons = g.features?.charm ? (g.charmStatus?.()?.ready || 0) : 0;
     this.setBadge(this.trophyBtn, g.achievementsReady() + g.albumPagesReady().length + ribbons);
+    // a gift that waits in Shop → Decor (a reload before it went up, or a cancelled ghost)
+    this.setBadge(this.shopBtn, (g.s.gifts || []).length, '🎁');
     const today = (g.dailyStatus().canClaim ? 1 : 0) + g.choresReady();
     this.setBadge(this.dailyBtn, today, today > 1 ? today : '!');
     let full = false;
@@ -713,8 +716,10 @@ export class HUD {
   postStrip(n) {
     const out = POST_AGES.map((label, i) => ({ label, state: i < n ? 'done' : i === n ? 'next' : '' }));
     out.push({ label: `then every ${POST.every / 3600}h`, state: n >= POST_AGES.length ? 'next' : '' });
-    return h('div', { class: 'post-strip' }, out.map((x, i) => h('span', { class: x.state },
-      x.label, x.state === 'done' ? ' ✓' : x.state === 'next' ? ' ●' : '', i < out.length - 1 ? h('i', {}, ' · ') : null)));
+    // each label keeps its mark (nowrap); the separators sit between the spans, so a narrow popover wraps the line
+    // after a ' ·' (the dot stays with the label before it)
+    return h('div', { class: 'post-strip' }, out.flatMap((x, i) => [h('span', { class: x.state },
+      x.label, x.state === 'done' ? ' ✓' : x.state === 'next' ? ' ●' : ''), i < out.length - 1 ? h('i', {}, '\u00a0· ') : null]));
   }
 
   // tap on the waiting pill: what's coming and when (closes after 5 s or on a tap elsewhere)
@@ -829,6 +834,8 @@ export class HUD {
       this.ctrl.postClosed?.(res);
     });
     back._enter = () => btn.click();
+    // (the parcel is already paid for while it shakes: neither Esc nor the dim skips its reveal)
+    back._esc = () => { if (state !== 'opening') back._close(); };
     back.addEventListener('click', (e) => { if (back._outside(e) && state !== 'opening') back._close(); });
     return back;
   }
@@ -1146,6 +1153,21 @@ export class HUD {
     p.body.append(p.render(p.tab));
     p.body.scrollTop = scroll;
     p.lastTab = p.tab;
+    if (p.id === 'treasures' && p.tabBar) {
+      // a dot on a tab with something new or to claim (the tab bar itself is rebuilt only when the tab changes)
+      const dots = this.treasureDots();
+      for (const b of p.tabBar.children) b.classList.toggle('has-new', !!dots[b.dataset.guide?.split(':').pop()]);
+    }
+  }
+
+  // { album, ribbons, awards }: which 🏆 tabs hold something new (an unseen keepsake) or to claim
+  treasureDots() {
+    const g = this.game;
+    return {
+      album: g.albumOpen() && (g.s.album.fresh?.length > 0 || g.albumPagesReady().length > 0),
+      ribbons: g.charmStatus().ready > 0,
+      awards: g.achievementsReady() > 0,
+    };
   }
 
   closePanel(instant = false) {
@@ -1721,13 +1743,22 @@ export class HUD {
       clearTimeout(arm.t);
       arm.t = setTimeout(() => { arm.gild = null; arm.sell = false; if (this.panel?.id === 'decor' && this.panel.ref === o.id) this.refreshPanel(); }, 4000);
     };
+    const mailbox = o.type === 'mailbox';
     this.openPanel({
       id: 'decor', ref: o.id,
       title: `${o.gilded ? '✨ ' : ''}${d.icon} ${d.name}`, cls: 'small',
+      live: mailbox, // (its countdown ticks, and a parcel that turns up offers Open)
       render: () => {
         const g = this.game;
         const st = g.charmStatus();
         const wrap = h('div', { class: 'decor-panel' });
+        if (mailbox) {
+          const ps = g.postStatus();
+          wrap.append(ps.ready
+            ? h('div', { class: 'center' }, '📬 A parcel is waiting! ',
+              h('button', { class: 'btn small', onclick: () => { this.audio.play('click'); this.closePanel(true); this.showPost(); } }, 'Open'))
+            : h('div', { class: 'muted small center' }, `📪 Next parcel in ${postClock(ps.msLeft)}`));
+        }
         if (st.unlocked) {
           const k = g.charm().kinds[o.type] || { counted: 0 };
           const v = g.charm().of(o);
@@ -1742,16 +1773,21 @@ export class HUD {
             this.closePanel();
             fn();
           };
+          // what it really adds to the farm's charm (nothing once three gilded ones of its kind count): then no
+          // scarce voucher is offered, and the paid button says it's for looks
+          const gain = g.gildGain(o);
           const gilds = h('div', { class: 'gild-btns' });
-          if (cost.voucher) {
+          if (cost.voucher && gain > 0) {
             gilds.append(h('button', { class: 'btn gild' + (arm.gild === 'voucher' ? ' armed' : ''), onclick: press('voucher', () => this.ctrl.gild?.(o, { voucher: true })) },
               arm.gild === 'voucher' ? '✨ Tap again to gild' : `✨ Gild with a voucher (${st.vouchers} left)`));
           }
           const afford = g.s.coins >= cost.coins && g.s.gems >= cost.gems;
           gilds.append(h('button', { class: 'btn gild' + (cost.voucher ? ' ghost' : '') + (afford ? '' : ' disabled') + (arm.gild === 'coins' ? ' armed' : ''),
             onclick: afford ? press('coins', () => this.ctrl.gild?.(o)) : () => this.toast(g.s.coins < cost.coins ? 'Not enough coins!' : 'Not enough gems 💎', 'bad') },
-          arm.gild === 'coins' ? '✨ Tap again to gild' : `✨ Gild — 🪙${fmtNum(cost.coins)} 💎${cost.gems}`));
-          wrap.append(gilds, h('div', { class: 'muted small center' }, 'Gold, and triple 💗 charm.'));
+          arm.gild === 'coins' ? '✨ Tap again to gild' : `✨ Gild${gain > 0 ? '' : ' for looks'} — 🪙${fmtNum(cost.coins)} 💎${cost.gems}`));
+          wrap.append(gilds, h('div', { class: 'muted small center' }, gain > 0
+            ? `Gold, and +💗${fmtNum(gain)} charm.`
+            : `Gold for looks: ${CHARM.perKind} gilded ones of this kind already count, so no more 💗.`));
         } else if (o.gilded) {
           wrap.append(h('div', { class: 'muted small center' }, '✨ Gilded: it shines gold and counts triple.'));
         } else if (st.unlocked && !st.gildUnlocked && CHARM.gildBase(o.type) >= CHARM.gildMin) {
@@ -1892,9 +1928,11 @@ export class HUD {
   }
 
   // 🏆 opens on something to claim (an album page, a ribbon rank, an award), else the album once it's open, else Awards
+  // (a keepsake that just flew into 🏆 — still NEW — opens the Album first: that's what the tap is about)
   treasuresTab() {
     const g = this.game;
     if (g.albumPagesReady().length) return 'album';
+    if (g.albumOpen() && g.s.album.fresh?.length) return 'album';
     if (g.charmStatus().ready) return 'ribbons';
     if (g.achievementsReady()) return 'awards';
     return g.albumOpen() ? 'album' : 'awards';
@@ -1962,8 +2000,9 @@ export class HUD {
       h('div', { class: 'album-page-title' }, h('b', {}, `${def.icon} ${def.name}`), h('small', {}, `page ${i + 1} of ${n}`)),
       h('button', { class: 'album-arrow' + (i < n - 1 ? '' : ' off'), 'data-guide': 'album:next', 'aria-label': 'Next page', onclick: () => { if (i < n - 1) show(st.pages[i + 1].id); } }, '›')));
     // dots: claimed ● · prize waiting (gold) · this page ◉ · open ○ · locked 🔒
+    // (and a NEW find waiting on another page: a small red mark)
     wrap.append(h('div', { class: 'album-dots' }, st.pages.map((q, j) => h('button', {
-      class: 'album-dot ' + (q.locked ? 'locked' : q.claimed ? 'claimed' : q.ready ? 'ready' : 'open') + (j === i ? ' current' : ''),
+      class: 'album-dot ' + (q.locked ? 'locked' : q.claimed ? 'claimed' : q.ready ? 'ready' : 'open') + (j === i ? ' current' : '') + (j !== i && q.fresh.length ? ' fresh' : ''),
       'data-guide': `album:page:${q.id}`, title: q.locked ? `${ALBUM.pages[j].name} · level ${q.level}` : ALBUM.pages[j].name, 'aria-label': ALBUM.pages[j].name,
       onclick: () => show(q.id),
     }, q.locked ? '🔒' : h('i')))));
@@ -2018,10 +2057,13 @@ export class HUD {
       h('div', { class: 'muted small' }, st.next
         ? `Next: rank ${st.next.rank} at 💗${fmtNum(st.next.need)} (${this.ribbonRewardText(st.next.reward).join(' + ')})`
         : 'Every ribbon is yours — the valley\'s Grand Champion Farm!'),
-      // (in the sticky card, so it stays in reach however far the list scrolls)
+      // (in the sticky card, so it stays in reach however far the list scrolls; so do the rule and, with nothing to
+      // claim, the way to more charm: the tab opens scrolled to the next rank, past anything above the list)
+      h('div', { class: 'rb-how' },
+        h('span', { class: 'rb-rule muted small' }, `Decorations add 💗: ${CHARM.perKind} of each kind count${st.gildUnlocked ? ', gilded ones ×3' : ''}.`),
+        st.ready ? null : h('button', { class: 'btn small ghost', onclick: () => { this.audio.play('click'); this.openShop('decor'); } }, '🌳 Decor ›')),
       st.ready ? h('button', { class: 'btn wide claim-all', 'data-guide': 'ribbons:claim', onclick: () => this.ctrl.claimRibbons?.() }, `🎀 Claim all (${st.ready})`) : null,
     ));
-    wrap.append(h('div', { class: 'rb-rule muted small' }, 'Every decoration adds charm — up to 3 of each kind count, gilded ones triple.'));
     const head = wrap.firstChild;
     const list = h('div', { class: 'rb-list' });
     let next = null;
@@ -2130,6 +2172,7 @@ export class HUD {
     const m = this.topModal();
     if (!m) return;
     if (key === 'enter' && m._enter) { m._enter(); return; }
+    if (key === 'escape' && m._esc) { m._esc(); return; }
     if (m._close) { m._close(); return; }
     m.classList.remove('open');
     if (m === this._luBack) this._luBack = null;
@@ -2139,6 +2182,9 @@ export class HUD {
   // shared shell of the centred modals; kind: 'levelup' | 'daily' | 'chest' | 'post'
   showModal(kind, modal, close) {
     this.closeSeedPopover();
+    // the HUD button that opened it (the 📬 pill after a click) gives up focus, so Enter / Space for the modal
+    // never also press it again behind the dim
+    if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur?.();
     const back = h('div', { class: 'backdrop levelup-back', 'data-modal': kind }, modal);
     // a tap on the dim closes some modals; not the click of the very tap that opened it (a farm tap on the
     // Mailbox opens the parcel on pointerup, and its click then lands on the new backdrop)

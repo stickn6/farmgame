@@ -192,7 +192,9 @@ export const OBJECTS = {
   // one-of-a-kind decorations (level 99: never sold, never in the Shop list): free gifts that refund nothing (removing
   // one puts it away, back to s.gifts: see oneOfAKind).
   // model: whose 3D model they reuse; tint: a recolour of it ('gold' = GOLD; tintDesat: how far its own colours fade to
-  // grey first, tintMetal / tintRough: a metal look); charm: for Prettiest Farm
+  // grey first, tintLift: how far that grey is brightened (default 0.35·tintDesat), tintMetal / tintRough: a metal
+  // look); charm: for Prettiest Farm. (The grey is multiplied by the tint, so a pale tint gives a greyish result:
+  // the sky, frost and blossom tints are a little deeper, with more lift.)
   mailbox: { name: 'Mailbox', icon: '📮', kind: 'decor', size: [1, 1], cost: 0, level: 99, charm: 40, desc: 'The flag goes up when a parcel waits.' },
   goldscarecrow: { name: 'Golden Scarecrow', icon: '🧑‍🌾', kind: 'decor', model: 'scarecrow', tint: 'gold', size: [1, 1], cost: 0, level: 99, charm: 75 },
   goldlamp: { name: 'Golden Lamp Post', icon: '🏮', kind: 'decor', model: 'lamp', tint: 'gold', size: [1, 1], cost: 0, level: 99, charm: 75 },
@@ -206,10 +208,10 @@ export const OBJECTS = {
   lilacgazebo: { name: 'Lilac Gazebo', icon: '🛖', kind: 'decor', model: 'gazebo', tint: '#d9c6ff', size: [3, 3], cost: 0, level: 99, charm: 455, desc: 'From Mabel\'s album: Mill Pond.' },
   silverrooster: { name: 'Silver Rooster', icon: '🐓', kind: 'decor', model: 'statue', tint: '#e3e9f0', tintDesat: 1, tintMetal: 0.2, tintRough: 0.35, size: [1, 1], cost: 0, level: 99, charm: 680, desc: 'From Mabel\'s album: Mabel\'s Attic.' },
   curio: { name: 'Curio Cabinet', icon: '🗄️', kind: 'decor', size: [2, 1], cost: 0, level: 99, charm: 300, desc: 'Mabel\'s keepsakes on show: the launch album is complete.' },
-  skyballoon: { name: 'Sky Balloon', icon: '🎈', kind: 'decor', model: 'balloon', tint: '#bfe3ff', tintDesat: 0.85, size: [2, 2], cost: 0, level: 99, charm: 960, desc: 'From Mabel\'s album: Family Heirlooms.' },
+  skyballoon: { name: 'Sky Balloon', icon: '🎈', kind: 'decor', model: 'balloon', tint: '#8fd0ff', tintDesat: 0.85, tintLift: 0.6, size: [2, 2], cost: 0, level: 99, charm: 960, desc: 'From Mabel\'s album: Family Heirlooms.' },
   // Prettiest Farm ribbon prizes (ranks 5 and 15)
-  blossomoak: { name: 'Blossom Oak', icon: '🌳', kind: 'decor', model: 'oak', tint: '#ffc7dd', tintDesat: 0.8, size: [1, 1], cost: 0, level: 99, charm: 90 },
-  frostpine: { name: 'Frosted Pine', icon: '🌲', kind: 'decor', model: 'pine', tint: '#dff2ff', tintDesat: 0.7, size: [1, 1], cost: 0, level: 99, charm: 90 },
+  blossomoak: { name: 'Blossom Oak', icon: '🌳', kind: 'decor', model: 'oak', tint: '#ffb3d1', tintDesat: 0.8, tintLift: 0.6, size: [1, 1], cost: 0, level: 99, charm: 90 },
+  frostpine: { name: 'Frosted Pine', icon: '🌲', kind: 'decor', model: 'pine', tint: '#cfeaff', tintDesat: 0.85, tintLift: 0.75, size: [1, 1], cost: 0, level: 99, charm: 90 },
 
   // starter debris on a new farm ("gone a bit wild"): never sold or unlocked (level 99), cleared
   // by tapping for a tiny one-off reward. Finite: 12 pieces, 🪙20 ⭐14 in total, no materials.
@@ -778,9 +780,11 @@ export const CAMERA = {
   zoomTilt: { enabled: false, per: 0.004, lo: -0.05, hi: 0.08 }, // optional polish, shipped OFF
 };
 
-// the gold recolour of the exclusive golden decorations (and, later, gilding); desat / lift: the model's own colours
-// fade most of the way to a brightened grey first, so the whole piece reads as bright gold
-export const GOLD = { color: '#ffd54a', metalness: 0.35, roughness: 0.45, desat: 0.8, lift: 0.5 };
+// the gold recolour of the exclusive golden decorations (and gilding); desat / lift: the model's own colours fade
+// most of the way to a brightened grey first, so the whole piece reads as bright gold. No metalness: the scene has
+// no environment map for a metal to reflect, so metalness would only darken it to olive (and no glow: at night that
+// turns a piece into a flat orange shape). A fountain's or a bird bath's water stays water: see MATS.vcWater.
+export const GOLD = { color: '#ffd54a', metalness: 0, roughness: 0.4, desat: 0.8, lift: 0.65 };
 
 // ---------------------------------------------------------------- the Post (timed gifts)
 // Parcel n (n = parcels opened so far) is ready at s.post.nextAt: 5 min after the farm starts, then each next one is
